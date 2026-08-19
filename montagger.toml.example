@@ -23,7 +23,7 @@ config = "montagger.toml"
 
 # --- tagging ---
 # ONNX model folder; may point into monbooru's model_path subfolder, e.g.
-# "E:\\Data\\Cache\\Monbooru\\models\\wd-swinv2"
+# "D:\\models\\wd-swinv2"
 model_dir = "."
 # backend: heuristic (no model, smoke tests) | onnx
 backend = "heuristic"

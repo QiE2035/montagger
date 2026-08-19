@@ -18,7 +18,7 @@ monbooru button click ──> relay 10s  ──> pipeline (prefetch window + inf
 ## Requirements
 
 - Python 3.11+ and [uv](https://docs.astral.sh/uv/)
-- An ONNX tagger model (WD14 family: `wd-swinv2`, `camie-v2`, `animetimm-eva02`; joytag works too). You can reuse the models monbooru already downloaded: point `model_dir` at a subfolder of its `model_path`, e.g. `E:\Data\Cache\Monbooru\models\wd-swinv2` (a `.onnx` plus a `.csv` or `.txt` tag file per folder).
+- An ONNX tagger model (WD14 family: `wd-swinv2`, `camie-v2`, `animetimm-eva02`; joytag works too). You can reuse the models monbooru already downloaded: point `model_dir` at a subfolder of its `model_path` (a `.onnx` plus a `.csv` or `.txt` tag file per folder).
 
 ## Install
 
@@ -41,7 +41,7 @@ Reasonable starting point with the monbooru models:
 ```toml
 addr = "127.0.0.1:8301"
 monbooru = "http://127.0.0.1:8080"
-model_dir = "E:\\Data\\Cache\\Monbooru\\models\\wd-swinv2"
+model_dir = "D:\\models\\wd-swinv2"
 backend = "onnx"
 ep = "directml"      # or cpu / cuda / openvino
 threshold = 0.35
