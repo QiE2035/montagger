@@ -1,0 +1,38 @@
+{% extends "layout.html" %}
+{% block content %}
+
+<div class="dash" hx-ext="sse" sse-connect="/api/stream?token={{ sse_token }}">
+  <div id="flash" sse-swap="notice" class="flash"></div>
+
+  <section id="stats" sse-swap="status">
+    {% include "partials/status_cards.html" %}
+  </section>
+
+  <section class="card live">
+    <h2>recent</h2>
+    <table>
+      <thead><tr><th>id</th><th>status</th><th>tags</th><th>note</th></tr></thead>
+      <tbody id="live-body" sse-swap="result" hx-swap="beforeend">
+        {% for row in live %}
+          {% include "partials/result_row.html" %}
+        {% else %}
+        <tr><td class="empty" colspan="4">no finished images yet</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+</div>
+
+<section class="card">
+  <div class="card-head">
+    <h2>results</h2>
+    <div class="filters">
+      <span class="btn btn-sm {{ 'active' if filter == 'all' }}" hx-get="/api/results?page=1&filter=all" hx-target="#results-wrap" hx-swap="innerHTML">all</span>
+      <span class="btn btn-sm {{ 'active' if filter == 'done' }}" hx-get="/api/results?page=1&filter=done" hx-target="#results-wrap" hx-swap="innerHTML">done</span>
+      <span class="btn btn-sm {{ 'active' if filter == 'failed' }}" hx-get="/api/results?page=1&filter=failed" hx-target="#results-wrap" hx-swap="innerHTML">failed</span>
+    </div>
+  </div>
+  <div id="results-wrap" hx-get="/api/results?page=1&filter=all" hx-trigger="load" hx-swap="innerHTML"></div>
+</section>
+
+{% endblock %}

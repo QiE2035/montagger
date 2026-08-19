@@ -1,0 +1,16 @@
+<table>
+  <thead><tr><th>id</th><th>status</th><th>tags</th><th>note</th></tr></thead>
+  <tbody>
+    {% for row in rows %}
+      {% include "partials/result_row.html" %}
+    {% else %}
+    <tr><td class="empty" colspan="4">no results</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+<nav class="pagination">
+  <span>{{ total }} result(s)</span>
+  {% if page > 1 %}<a class="btn btn-sm" hx-get="/api/results?page={{ page - 1 }}&filter={{ filter }}" hx-target="#results-wrap" hx-swap="innerHTML">&larr; prev</a>{% else %}<span class="btn btn-sm disabled">&larr; prev</span>{% endif %}
+  <span>page {{ page }} / {{ pages }}</span>
+  {% if page < pages %}<a class="btn btn-sm" hx-get="/api/results?page={{ page + 1 }}&filter={{ filter }}" hx-target="#results-wrap" hx-swap="innerHTML">next &rarr;</a>{% else %}<span class="btn btn-sm disabled">next &rarr;</span>{% endif %}
+</nav>

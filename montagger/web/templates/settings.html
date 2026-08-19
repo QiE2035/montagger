@@ -1,0 +1,94 @@
+{% extends "layout.html" %}
+{% block content %}
+
+<section class="card" id="settings-form">
+  <div class="card-head">
+    <h2>settings</h2>
+    <span class="cfg-note">config: {{ settings.config }}</span>
+  </div>
+  <div id="flash" class="flash"></div>
+
+  <form hx-post="/api/settings" hx-target="#settings-form" hx-swap="outerHTML">
+
+    <div class="field-group">
+      <label>backend <span class="badge badge-warn">restart required</span></label>
+      <input type="text" value="{{ settings.backend }}" disabled>
+      <p class="hint">onnx | heuristic; onnx reads its model from model_dir</p>
+    </div>
+
+    <div class="field-group">
+      <label for="ep">execution provider <span class="badge badge-ok">hot</span></label>
+      <select id="ep" name="ep">
+        <option value="{{ runtime.ep }}" selected>{{ runtime.ep }} (current)</option>
+        {% for name in providers if name != runtime.ep %}
+        <option value="{{ name }}">{{ name }}</option>
+        {% endfor %}
+      </select>
+      <p class="hint">installed providers only; uninstalled ones (see extras) are hidden</p>
+    </div>
+
+    <div class="row">
+      <div class="field-group">
+        <label for="threshold">threshold <span class="badge badge-ok">hot</span></label>
+        <input type="number" id="threshold" name="threshold" value="{{ runtime.threshold }}" min="0" max="1" step="0.05">
+      </div>
+      <div class="field-group">
+        <label for="character_threshold">character threshold <span class="badge badge-ok">hot</span></label>
+        <input type="number" id="character_threshold" name="character_threshold" value="{{ runtime.character_threshold }}" min="0" max="1" step="0.05">
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="field-group">
+        <label for="window">inflight window <span class="badge badge-ok">hot</span></label>
+        <input type="number" id="window" name="window" value="{{ runtime.window }}" min="1" max="1024">
+        <p class="hint">images fetched + preprocessed + queued + inferring</p>
+      </div>
+      <div class="field-group">
+        <label for="prefetch_threads">prefetch threads <span class="badge badge-ok">hot</span></label>
+        <input type="number" id="prefetch_threads" name="prefetch_threads" value="{{ runtime.prefetch_threads }}" min="1" max="64">
+      </div>
+      <div class="field-group">
+        <label for="workers">inference workers <span class="badge badge-ok">hot</span></label>
+        <input type="number" id="workers" name="workers" value="{{ runtime.workers }}" min="1" max="64">
+        <p class="hint">forced to 1 on DirectML</p>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="field-group">
+        <label for="general_topk">general tag cap <span class="badge badge-ok">hot</span></label>
+        <input type="number" id="general_topk" name="general_topk" value="{{ runtime.general_topk }}" min="1" max="200">
+      </div>
+      <div class="field-group">
+        <label class="checkbox">
+          <input type="checkbox" id="skip_tagged" name="skip_tagged" {{ 'checked' if runtime.skip_tagged }}>
+          skip images already tagged by monbooru (auto_tagged_at)
+        </label>
+      </div>
+    </div>
+
+    <div class="field-group">
+      <label>model_dir <span class="badge badge-warn">restart required</span></label>
+      <input type="text" value="{{ settings.model_dir }}" disabled>
+      <p class="hint">may point into monbooru's model_path, e.g. .../models/wd-swinv2</p>
+    </div>
+
+    <button class="btn btn-primary" type="submit">save</button>
+  </form>
+
+  <table class="cfg-table">
+    <thead><tr><th>setting</th><th>value</th><th>source</th></tr></thead>
+    <tbody>
+      {% for key in ["addr", "monbooru", "state", "backend", "model_dir", "window", "workers"] %}
+      <tr>
+        <td>{{ key }}</td>
+        <td>{{ settings[key] }}</td>
+        <td><span class="badge">{{ settings.source_of(key) }}</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+
+{% endblock %}

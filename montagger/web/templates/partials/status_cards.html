@@ -1,0 +1,24 @@
+<div class="stat-grid">
+  <div class="stat"><span class="stat-num">{{ stats.pending }}</span><span class="stat-label">pending</span></div>
+  <div class="stat"><span class="stat-num num-accent">{{ stats.processing }}</span><span class="stat-label">processing</span></div>
+  <div class="stat"><span class="stat-num num-ok">{{ stats.done }}</span><span class="stat-label">done</span></div>
+  <div class="stat"><span class="stat-num num-err">{{ stats.failed }}</span><span class="stat-label">failed</span></div>
+  <div class="stat"><span class="stat-num">{{ stats.window }}</span><span class="stat-label">window</span></div>
+  <div class="stat"><span class="stat-num">{{ stats.throughput }}</span><span class="stat-label">per second</span></div>
+  <div class="stat"><span class="stat-num">{{ stats.eta if stats.eta is not none else '&ndash;' | safe }}</span><span class="stat-label">eta (s)</span></div>
+</div>
+
+<div class="progress">
+  <div class="progress-bar" style="width: {{ stats | progress_pct }}%"></div>
+</div>
+
+<div class="ops">
+  {% if stats.paused %}
+  <button class="btn" hx-post="/api/resume">resume</button>
+  {% else %}
+  <button class="btn" hx-post="/api/pause" {{ 'disabled' if stats.stopped }}>pause</button>
+  {% endif %}
+  <button class="btn" hx-post="/api/retry">retry failed</button>
+  <button class="btn btn-danger" hx-post="/api/clear-results" hx-confirm="clear all results?">clear results</button>
+  <button class="btn btn-danger" hx-post="/api/clear-tasks" hx-confirm="clear the whole task list?">clear tasks</button>
+</div>

@@ -1,0 +1,60 @@
+# montagger configuration.
+#
+# Copy this file next to your montagger invocation (default: ./montagger.toml,
+# or the path given with --config / MONTAGGER_CONFIG). Every key here can
+# also come from the environment (MONTAGGER_<KEY>, e.g. MONTAGGER_WINDOW)
+# or the command line (--window 16); command line wins over the environment,
+# which wins over this file, which wins over built-in defaults.
+#
+# The WebUI writes runtime-tunable settings back into this file (keeping
+# comments and formatting), so this file is the single source of truth.
+
+# --- listening / pairing ---
+# address to serve on
+addr = "127.0.0.1:8301"
+# where monbooru answers (also accepted: MONBOORU_URL environment variable)
+monbooru = "http://127.0.0.1:8080"
+# address monbooru should call back at; leave empty for http://<addr>
+url = ""
+# directory holding credentials.json, the tasks database and this file
+state = "."
+# config file to use (--config / MONTAGGER_CONFIG)
+config = "montagger.toml"
+
+# --- tagging ---
+# ONNX model folder; may point into monbooru's model_path subfolder, e.g.
+# "E:\\Data\\Cache\\Monbooru\\models\\wd-swinv2"
+model_dir = "."
+# backend: heuristic (no model, smoke tests) | onnx
+backend = "heuristic"
+# execution provider: cpu | cuda | directml | openvino | coreml
+ep = "cpu"
+# score floor for general tags
+threshold = 0.35
+# score floor for the character category (stricter)
+character_threshold = 0.5
+# sigmoid_in_model if the ONNX graph already applies sigmoid (WD14 family), logits otherwise
+activation = "sigmoid_in_model"
+
+# --- pipeline ---
+# inflight images: fetch + preprocess + waiting-for-inference + inferring,
+# upper bounded to this many in memory (default 16)
+window = 16
+# prefetch (download + preprocess) threads
+prefetch_threads = 2
+# inference workers; forced to 1 when ep = directml
+workers = 2
+# skip images that already carry auto_tagged_at
+skip_tagged = false
+# re-enqueue pending/failed/processing tasks at startup
+resume = true
+
+# --- webui ---
+# optional token for direct WebUI access (via monbooru open mode the
+# pairing secret is used instead)
+webui_token = ""
+
+# --- misc ---
+log_level = "info"
+# source string recorded in monbooru for tags we add
+via = "montagger"

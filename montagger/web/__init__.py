@@ -1,0 +1,1 @@
+"""Web layer: FastAPI app, pairing hooks, SSE bus, htmx templates."""

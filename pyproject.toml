@@ -1,0 +1,43 @@
+[project]
+name = "montagger"
+version = "0.1.0"
+description = "A monbooru tagger plugin: pipeline image tagging with local ONNX models, pairing and a WebUI"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "AGPL-3.0-only"
+dependencies = [
+  "fastapi",
+  "httpx",
+  "jinja2",
+  "numpy",
+  "onnxruntime",
+  "pillow",
+  "pydantic",
+  "pydantic-settings",
+  "python-multipart",
+  "tomlkit",
+  "uvicorn",
+]
+
+[project.scripts]
+montagger = "montagger.__main__:main"
+
+[project.urls]
+Repository = "https://github.com/QiE2035/montagger"
+Issues = "https://github.com/QiE2035/montagger/issues"
+
+[project.optional-dependencies]
+dev = ["pytest"]
+directml = ["onnxruntime-directml"]
+gpu = ["onnxruntime-gpu"]
+openvino = ["onnxruntime-openvino"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["montagger"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

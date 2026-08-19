@@ -1,0 +1,10 @@
+<tr class="row-{{ row.status }}">
+  <td class="num">{{ row.image_id }}</td>
+  <td><span class="badge badge-{{ row.status }}">{{ row.status }}</span></td>
+  <td class="tags">
+    {% for tag in row.tags %}
+    <span class="tag-chip">{{ tag }}</span>
+    {% endfor %}
+  </td>
+  <td class="err">{{ row.error }}</td>
+</tr>

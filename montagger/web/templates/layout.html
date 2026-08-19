@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>montagger</title>
+<link rel="stylesheet" href="/static/main.css">
+<script src="/static/vendor/htmx.min.js"></script>
+<script src="/static/vendor/sse.js"></script>
+<script src="/static/main.js"></script>
+{% block head %}{% endblock %}
+</head>
+<body hx-headers='{"X-Montagger": "1", "Authorization": "Bearer {{ auth }}" }'>
+<header class="topbar">
+  <a class="brand" href="/">montagger<span class="brand-dot">.</span></a>
+  <nav class="nav">
+    <a href="/">dashboard</a>
+    <a href="/settings">settings</a>
+  </nav>
+  <div class="topbar-right">
+    <div id="pair-light"
+         hx-get="/api/pair-light"
+         hx-trigger="every 5s"
+         hx-swap="innerHTML"
+         hx-target="this">
+      {% include "partials/pair_light.html" %}
+    </div>
+  </div>
+</header>
+<main class="container">
+{% block content %}{% endblock %}
+</main>
+<footer class="footer">montagger v{{ version }} &middot; {{ stats.total if stats else 0 }} tasks tracked</footer>
+</body>
+</html>

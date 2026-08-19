@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual env
+.venv/
+
+# Test
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local config / runtime data
+montagger.toml
+*.db
+*.db-wal
+*.db-shm
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
