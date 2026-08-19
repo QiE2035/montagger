@@ -23,13 +23,14 @@ monbooru button click ──> relay 10s  ──> pipeline (prefetch window + inf
 ## Install
 
 ```sh
-uv sync --extra dev            # CPU provider (default)
+uv sync                        # CPU provider (default)
+uv sync --extra dev            # development (adds pytest, replaces nothing)
 uv sync --extra gpu            # CUDA (onnxruntime-gpu replaces the CPU package)
 uv sync --extra directml       # DirectML
 uv sync --extra openvino       # OpenVINO
 ```
 
-The provider packages are mutually exclusive - install only the one you want. The WebUI only offers execution providers the installed package actually has.
+The provider packages (gpu / directml / openvino) are mutually exclusive - install only the one you want; `dev` is additive. The WebUI only offers execution providers the installed package actually has.
 
 ## Configure
 
