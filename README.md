@@ -39,12 +39,6 @@ Copy `montagger.toml.example` to `montagger.toml` and edit it. Every key can als
 Reasonable starting point with the monbooru models:
 
 ```toml
-[server]
-addr = "127.0.0.1:8301"
-
-[monbooru]
-url = "http://127.0.0.1:8080"
-
 [paths]
 model_dir = "D:\\models\\wd-swinv2"
 
@@ -64,17 +58,16 @@ uv run montagger
 ```
 
 1. Open `http://127.0.0.1:8301` (or reach it through monbooru's plugin pages once paired).
-2. Settings > pairing: click *connect to monbooru*, then approve the `montagger` pairing request in monbooru Settings > Plugins. The pairing is manual - montagger never reaches out on its own; once approved, don't forget to approve the buttons. The buttons appear on the image detail page and the batch bar.
-3. Select images and click *tag with montagger*. The relay answers in milliseconds (the ids are queued); the WebUI follows the progress live.
+2. Settings > pairing: enter a monbooru address, click *connect*, then approve the `montagger` pairing request in that monbooru's Settings > Plugins. Pairing is manual and one-to-many - one montagger can pair with any number of monbooru instances; each pairing stores its own credentials (`url` + `token` + `peer`) in a `[[pairing]]` table in montagger.toml, like monloader's `[[auth.tokens]]`. Once approved, don't forget to approve the buttons. The buttons appear on the image detail page and the batch bar.
+3. Select images and click *tag with montagger*. The relay answers in milliseconds (the ids are queued), tasks are tagged back against the instance they came from, and the WebUI follows the progress live.
 
 For a no-model smoke test keep `backend = "heuristic"` - it derives simple tags (portrait/landscape, bright/dark, grayscale/colorful, size) from the image itself.
 
 ## WebUI
 
 - **dashboard** `/`: live counts (pending / processing / done / failed), progress bar, throughput and ETA, an operations bar (pause, retry failed, clear results/tasks) and a paged results table (50 per page, filter all/done/failed). Live updates come over SSE (htmx-sse); the pair light in the top bar polls.
-- **settings** `/settings`: monloader-style shell with a section rail - monbooru, pairing, tagging, pipeline, paths, advanced. Every field is editable and each section saves on its own (a "saved" hint appears next to the button). Nearly everything is hot - applied immediately and written back to `montagger.toml`:
-  - monbooru url (re-binds the client and pairing) and callback url
-  - via (source string), backend and model_dir (rebuild the model session on change), execution provider (rebuilds the ONNX session, falling back to CPU), activation
+- **settings** `/settings`: monloader-style shell with a section rail - pairing, tagging, pipeline, paths, advanced. Every field is editable and each section saves on its own (a "saved" hint appears next to the button). Nearly everything is hot - applied immediately and written back to `montagger.toml`:
+  - callback url, via (source string), backend and model_dir (rebuild the model session on change), execution provider (rebuilds the ONNX session, falling back to CPU), activation
   - thresholds, general tag cap, inflight window, prefetch/inference thread counts, skip-already-tagged
   - log level and webui_token
   Only `addr`, `state` and `resume` need a restart - they are still editable and saved with a "takes effect after restart" note.
