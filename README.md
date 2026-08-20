@@ -39,12 +39,21 @@ Copy `montagger.toml.example` to `montagger.toml` and edit it. Every key can als
 Reasonable starting point with the monbooru models:
 
 ```toml
+[server]
 addr = "127.0.0.1:8301"
-monbooru = "http://127.0.0.1:8080"
+
+[monbooru]
+url = "http://127.0.0.1:8080"
+
+[paths]
 model_dir = "D:\\models\\wd-swinv2"
+
+[tagging]
 backend = "onnx"
 ep = "directml"      # or cpu / cuda / openvino
 threshold = 0.35
+
+[pipeline]
 window = 16
 ```
 
@@ -55,7 +64,7 @@ uv run montagger
 ```
 
 1. Open `http://127.0.0.1:8301` (or reach it through monbooru's plugin pages once paired).
-2. monbooru Settings > Plugins: approve the `montagger` pairing request. The buttons appear on the image detail page and the batch bar.
+2. Settings > pairing: click *connect to monbooru*, then approve the `montagger` pairing request in monbooru Settings > Plugins. The pairing is manual - montagger never reaches out on its own; once approved, don't forget to approve the buttons. The buttons appear on the image detail page and the batch bar.
 3. Select images and click *tag with montagger*. The relay answers in milliseconds (the ids are queued); the WebUI follows the progress live.
 
 For a no-model smoke test keep `backend = "heuristic"` - it derives simple tags (portrait/landscape, bright/dark, grayscale/colorful, size) from the image itself.
@@ -63,9 +72,14 @@ For a no-model smoke test keep `backend = "heuristic"` - it derives simple tags 
 ## WebUI
 
 - **dashboard** `/`: live counts (pending / processing / done / failed), progress bar, throughput and ETA, an operations bar (pause, retry failed, clear results/tasks) and a paged results table (50 per page, filter all/done/failed). Live updates come over SSE (htmx-sse); the pair light in the top bar polls.
-- **settings** `/settings`: hot-tunable values are applied immediately and written back to `montagger.toml` - execution provider (builds a new ONNX session on switch), thresholds, inflight window, prefetch/inference thread counts, general tag cap, skip-already-tagged. Values that need a restart are shown read-only with a badge.
+- **settings** `/settings`: monloader-style shell with a section rail - monbooru, pairing, tagging, pipeline, paths, advanced. Every field is editable and each section saves on its own (a "saved" hint appears next to the button). Nearly everything is hot - applied immediately and written back to `montagger.toml`:
+  - monbooru url (re-binds the client and pairing) and callback url
+  - via (source string), backend and model_dir (rebuild the model session on change), execution provider (rebuilds the ONNX session, falling back to CPU), activation
+  - thresholds, general tag cap, inflight window, prefetch/inference thread counts, skip-already-tagged
+  - log level and webui_token
+  Only `addr`, `state` and `resume` need a restart - they are still editable and saved with a "takes effect after restart" note.
 
-Access: routes require the pairing secret (used automatically when the page is opened through monbooru's plugin proxy), or `webui_token` when you connect directly. The SSE stream takes the token as a query parameter (`EventSource` cannot send headers); keep montagger on localhost.
+Access: the pages sign in with the pairing secret (used automatically when the page is opened through monbooru's plugin proxy) or with `webui_token` when you connect directly. Without a token configured, a sign-in page asks for one of them; the session is kept in an HttpOnly cookie, and the SSE stream rides on the same cookie (`EventSource` cannot send headers). Keep montagger on localhost.
 
 ## How the pipeline works
 
@@ -87,7 +101,9 @@ The SQLite database (`<state>/montagger.db`) keeps the task list and all results
 
 ### Pairing & credentials
 
-montagger follows the standard plugin contract (identical to the simple-edit reference): it offers a pairing with `app = montagger` and scopes `read` + `write`, monbooru presents the peer secret on every inbound request (relay clicks, our pages), and we authenticate API calls with the token from the pairing. Credentials live in `<state>/credentials.json` (0600). If the API starts answering 401/403 the credentials are dropped and a fresh pairing is offered; when you remove the pairing in monbooru, montagger offers again on its own.
+montagger follows the standard plugin contract (identical to the simple-edit reference): it offers a pairing with `app = montagger` and scopes `read` + `write`, monbooru presents the peer secret on every inbound request (relay clicks, our pages), and we authenticate API calls with the token from the pairing. Credentials live in `<state>/credentials.json` (0600).
+
+Pairing is **operator-initiated**, like monloader: on startup montagger only restores stored credentials from disk and never offers on its own. Connect from Settings > pairing; the panel polls every 2s while the offer awaits approval and you can cancel it. `remove pairing` (or removing it in monbooru) drops the credentials on both ends. If the API starts answering 401/403 the credentials are dropped but nothing is offered - connect again to re-pair.
 
 ## Tests
 
