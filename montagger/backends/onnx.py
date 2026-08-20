@@ -105,8 +105,8 @@ class OnnxBackend(Backend):
             raise RuntimeError("onnxruntime is not installed")
         self.runtime = runtime
         self.client = deps.get("client")
-        self.model_dir = Path(deps.get("model_dir", "."))
-        self.activation = deps.get("activation", "sigmoid_in_model")
+        self.model_dir = Path(getattr(runtime, "model_dir", "."))
+        self.activation = getattr(runtime, "activation", "sigmoid_in_model")
         self._lock = threading.RLock()
         self._session: Any = None
         self._labels: list[_Label] = []
@@ -190,7 +190,12 @@ class OnnxBackend(Backend):
         return ["CPUExecutionProvider"]
 
     def reload(self, runtime: Any) -> None:
+        """Hot-reload: provider, model folder and activation all come from
+        the runtime, so a settings save that touches any of them rebuilds
+        the session (falling back to CPU on an unknown provider)."""
         self.runtime = runtime
+        self.model_dir = Path(getattr(runtime, "model_dir", self.model_dir))
+        self.activation = getattr(runtime, "activation", self.activation)
         self.load()
 
     # ---- preprocessing & inference ---------------------------------------

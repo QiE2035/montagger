@@ -140,6 +140,20 @@ class Pipeline:
         """Apply runtime changes (worker/thread counts) live."""
         self._ensure_threads()
 
+    def set_backend(self, backend: Any) -> None:
+        """Hot-swap the model backend. In-flight inferences hold their own
+        reference, so closing the old one here is safe."""
+        old = self.backend
+        with self._cond:
+            self.backend = backend
+        if old is not backend:
+            old.close()
+        log.info("pipeline backend switched to %s", getattr(backend, "name", type(backend).__name__))
+
+    def set_via(self, via: str) -> None:
+        """Hot-update the source string written into monbooru tags."""
+        self.via = via
+
     # ---- stats ----------------------------------------------------------
 
     def stats(self) -> dict[str, Any]:

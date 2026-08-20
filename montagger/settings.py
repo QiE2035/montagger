@@ -28,7 +28,6 @@ from pydantic_settings import (
     CliSettingsSource,
     PydanticBaseSettingsSource,
     SettingsConfigDict,
-    TomlConfigSettingsSource,
 )
 
 # EP names used across settings, CLI and WebUI, mapped to onnxruntime
@@ -61,6 +60,35 @@ BUTTONS: list[dict[str, str]] = [
     {"slot": "batch-bar", "label": "tag with montagger", "mode": "relay", "path": "/relay/tag", "media": "image"},
 ]
 
+# montagger.toml is organised in sections (like monbooru.toml). The settings
+# model stays flat; this map routes each field to its (section, key) pair so
+# [server].url and [monbooru].url can both exist without colliding.
+FIELD_MAP: dict[str, tuple[str, str]] = {
+    "addr": ("server", "addr"),
+    "url": ("server", "url"),
+    "monbooru": ("monbooru", "url"),
+    "via": ("monbooru", "via"),
+    "state": ("paths", "state"),
+    "config": ("paths", "config"),
+    "model_dir": ("paths", "model_dir"),
+    "backend": ("tagging", "backend"),
+    "ep": ("tagging", "ep"),
+    "threshold": ("tagging", "threshold"),
+    "character_threshold": ("tagging", "character_threshold"),
+    "activation": ("tagging", "activation"),
+    "general_topk": ("tagging", "general_topk"),
+    "window": ("pipeline", "window"),
+    "prefetch_threads": ("pipeline", "prefetch_threads"),
+    "workers": ("pipeline", "workers"),
+    "skip_tagged": ("pipeline", "skip_tagged"),
+    "resume": ("pipeline", "resume"),
+    "webui_token": ("webui", "webui_token"),
+    "log_level": ("log", "level"),
+}
+TOML_TO_FIELD = {
+    (section, key): field for field, (section, key) in FIELD_MAP.items()
+}
+
 
 def resolve_config_path() -> Path:
     """Locate montagger.toml: --config/-c on the command line wins, then
@@ -79,11 +107,37 @@ def resolve_config_path() -> Path:
     return Path("montagger.toml")
 
 
-class MontaggerTomlSource(TomlConfigSettingsSource):
-    """Toml source pinned to the resolved config path."""
+class MontaggerTomlSource(PydanticBaseSettingsSource):
+    """Toml source pinned to the resolved config path. Section tables are
+    flattened onto the flat settings model (e.g. [pipeline].window ->
+    field window)."""
 
     def __init__(self, settings_cls: type[BaseSettings], toml_file: Path) -> None:
-        super().__init__(settings_cls, toml_file=toml_file)
+        super().__init__(settings_cls)
+        self.toml_file = Path(toml_file)
+
+    def __call__(self) -> dict[str, Any]:
+        if not self.toml_file.exists():
+            return {}
+        import tomllib
+
+        doc = tomllib.loads(self.toml_file.read_text(encoding="utf-8"))
+        flat: dict[str, Any] = {}
+        for key, value in doc.items():
+            if isinstance(value, dict):
+                for sub_key, sub_value in value.items():
+                    field = TOML_TO_FIELD.get((key, sub_key))
+                    if field:
+                        flat[field] = sub_value
+            else:
+                if key in self.settings_cls.model_fields:
+                    flat[key] = value  # top-level keys (flat legacy files)
+        return flat
+
+    def get_field_value(self, field: Any, field_name: str) -> tuple[Any, str, bool]:
+        # The whole document is collected in __call__; per-field hooks are
+        # not used.
+        return None, field_name, False
 
 
 class Settings(BaseSettings):
@@ -95,6 +149,7 @@ class Settings(BaseSettings):
         cli_parse_args=True,
         cli_implicit_flags=True,
         cli_show_env_vars=True,
+        populate_by_name=True,  # source dicts may use field names, not only aliases
         extra="ignore",
     )
 
@@ -183,7 +238,16 @@ class Settings(BaseSettings):
         else:
             doc = tomlkit.document()
         for key, value in values.items():
-            doc[key] = value
+            mapped = FIELD_MAP.get(key)
+            if mapped:
+                section, toml_key = mapped
+                table = doc.get(section)
+                if table is None:
+                    table = tomlkit.table()
+                    doc[section] = table
+                table[toml_key] = value
+            else:
+                doc[key] = value
         path.write_text(tomlkit.dumps(doc), encoding="utf-8")
 
     def effective_workers(self) -> int:
@@ -200,6 +264,10 @@ class RuntimeState:
     ep: str = "cpu"
     threshold: float = 0.35
     character_threshold: float = 0.5
+    general_topk: int = 40
+    backend: str = "heuristic"
+    model_dir: str = "."
+    activation: str = "sigmoid_in_model"
     window: int = 16
     prefetch_threads: int = 2
     workers: int = 2
@@ -213,6 +281,10 @@ class RuntimeState:
             ep=settings.ep,
             threshold=settings.threshold,
             character_threshold=settings.character_threshold,
+            general_topk=settings.general_topk,
+            backend=settings.backend,
+            model_dir=str(settings.model_dir),
+            activation=settings.activation,
             window=settings.window,
             prefetch_threads=settings.prefetch_threads,
             workers=settings.workers,
@@ -235,6 +307,10 @@ class RuntimeState:
                 "ep": self.ep,
                 "threshold": self.threshold,
                 "character_threshold": self.character_threshold,
+                "general_topk": self.general_topk,
+                "backend": self.backend,
+                "model_dir": self.model_dir,
+                "activation": self.activation,
                 "window": self.window,
                 "prefetch_threads": self.prefetch_threads,
                 "workers": self.workers,

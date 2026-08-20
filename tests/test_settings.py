@@ -26,7 +26,7 @@ def test_defaults(clean_env: None) -> None:
 
 def test_toml_is_lowest_source(clean_env: None, tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
     config = tmp_path / "montagger.toml"
-    config.write_text("window = 8\nthreshold = 0.5\n", encoding="utf-8")
+    config.write_text("[pipeline]\nwindow = 8\n[tagging]\nthreshold = 0.5\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
     settings = Settings()
@@ -80,9 +80,26 @@ def test_write_back_roundtrip(clean_env: None, tmp_path: pytest.TempPathFactory,
     assert reloaded.ep == "directml"
 
 
+def test_toml_sections_map_to_fields(clean_env: None, tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    """[server].url and [monbooru].url must land on different fields."""
+    config = tmp_path / "montagger.toml"
+    config.write_text(
+        "[server]\nurl = \"http://127.0.0.1:9999\"\n"
+        "[monbooru]\nurl = \"http://mon.example:8080\"\nvia = \"custom\"\n"
+        "[log]\nlevel = \"debug\"\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    settings = Settings()
+    assert settings.url == "http://127.0.0.1:9999"
+    assert settings.monbooru == "http://mon.example:8080"
+    assert settings.via == "custom"
+    assert settings.log_level == "debug"
+
+
 def test_source_of(clean_env: None, tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
     config = tmp_path / "montagger.toml"
-    config.write_text("window = 8\n", encoding="utf-8")
+    config.write_text("[pipeline]\nwindow = 8\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
 
     settings = Settings()

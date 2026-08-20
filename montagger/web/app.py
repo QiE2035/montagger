@@ -7,14 +7,17 @@ tears them down gracefully (drain the pipeline, then close everything).
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator
 
 from fastapi import Depends, FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.exceptions import HTTPException
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
@@ -27,7 +30,7 @@ from montagger.pipeline import Pipeline
 from montagger.settings import BUTTONS, EP_ALIASES, RuntimeState, Settings
 from montagger.store import STATUSES, Store
 from montagger.tagging import RelayPayload, relay_answer
-from montagger.web.auth import require_auth, require_peer, require_stream
+from montagger.web.auth import SESSION_COOKIE, require_auth, require_csrf, require_peer, require_stream
 from montagger.web.events import EventBus
 
 log = logging.getLogger(__name__)
@@ -44,11 +47,22 @@ class SettingsPatch(BaseModel):
     ep: str | None = None
     threshold: float | None = Field(default=None, ge=0.0, le=1.0)
     character_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    general_topk: int | None = Field(default=None, ge=1, le=200)
     window: int | None = Field(default=None, ge=1, le=1024)
     prefetch_threads: int | None = Field(default=None, ge=1, le=64)
     workers: int | None = Field(default=None, ge=1, le=64)
     skip_tagged: bool | None = None
-    general_topk: int | None = None
+    resume: bool | None = None
+    monbooru: str | None = None
+    url: str | None = None
+    via: str | None = None
+    backend: str | None = None
+    model_dir: str | None = None
+    activation: str | None = None
+    log_level: str | None = None
+    webui_token: str | None = None
+    addr: str | None = None
+    state: str | None = None
 
 
 def _render(templates: Jinja2Templates, name: str, **ctx: Any) -> str:
@@ -77,6 +91,8 @@ def create_app(settings: Settings) -> FastAPI:
         state = app.state
         state.runtime = runtime
         state.bus = bus
+        state.sessions: set[str] = set()
+        state.csrf = secrets.token_urlsafe(16)
 
         # Composed services, torn down in reverse order.
         store = Store(settings.state / "montagger.db")
@@ -99,7 +115,7 @@ def create_app(settings: Settings) -> FastAPI:
         state.backend = get_backend(
             settings.backend,
             runtime,
-            {"client": client, "model_dir": settings.model_dir, "activation": settings.activation},
+            {"client": client},
         )
 
         pipeline = Pipeline(
@@ -133,6 +149,41 @@ def create_app(settings: Settings) -> FastAPI:
     app.state.templates = templates
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+    @app.exception_handler(HTTPException)
+    async def http_error(request: Request, exc: HTTPException) -> Response:
+        path = request.url.path
+        login_needed = bool(settings.webui_token)
+        if exc.status_code == 401 and login_needed and not (
+            path.startswith("/api/") or path.startswith("/relay/") or path == "/health"
+        ):
+            return HTMLResponse(_render(templates, "login.html", error=""), status_code=401)
+        return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+
+    @app.post("/api/login")
+    async def login(request: Request) -> Response:
+        form = await request.form()
+        presented = (form.get("token") or "").strip()
+        peer = request.app.state.pairing.peer()
+        ok = bool(presented) and (
+            (peer and hmac.compare_digest(presented, peer))
+            or (settings.webui_token and hmac.compare_digest(presented, settings.webui_token))
+        )
+        if not ok:
+            return HTMLResponse(
+                _render(templates, "login.html", error="wrong token"), status_code=401
+            )
+        session_id = secrets.token_urlsafe(32)
+        request.app.state.sessions.add(session_id)
+        response = RedirectResponse("/", status_code=303)
+        response.set_cookie(
+            SESSION_COOKIE,
+            session_id,
+            max_age=30 * 24 * 3600,
+            httponly=True,
+            samesite="lax",
+        )
+        return response
+
     # ---- plugin contract (monbooru <-> montagger) -----------------------
 
     @app.get("/health")
@@ -164,17 +215,17 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
     def dashboard(request: Request) -> HTMLResponse:
-        ctx = _page_ctx(request)
-        ctx["sse_token"] = settings.webui_token or request.app.state.pairing.peer()
+        ctx = _page_ctx(request, active_nav="dashboard")
+        ctx["sse_token"] = settings.webui_token or ""
         rows, _ = request.app.state.store.results(1, LIVE_MAX, None)
         ctx["live"] = _rows_view(rows)
         return HTMLResponse(_render(templates, "index.html", **ctx))
 
     @app.get("/settings", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
     def settings_page(request: Request) -> HTMLResponse:
-        return HTMLResponse(_render(templates, "settings.html", **_page_ctx(request)))
+        return HTMLResponse(_render(templates, "settings.html", **_page_ctx(request, active_nav="settings")))
 
-    def _page_ctx(request: Request) -> dict[str, Any]:
+    def _page_ctx(request: Request, active_nav: str = "") -> dict[str, Any]:
         p = request.app.state.pipeline
         return {
             "version": __version__,
@@ -184,7 +235,8 @@ def create_app(settings: Settings) -> FastAPI:
             "pipeline": p,
             "stats": p.stats(),
             "providers": _ep_options(),
-            "auth": settings.webui_token or request.app.state.pairing.peer(),
+            "csrf": request.app.state.csrf,
+            "active_nav": active_nav,
         }
 
     def _ep_options() -> list[str]:
@@ -201,6 +253,30 @@ def create_app(settings: Settings) -> FastAPI:
     @app.get("/api/pair-light", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
     def pair_light(request: Request) -> HTMLResponse:
         return HTMLResponse(_render(templates, "partials/pair_light.html", pairing=request.app.state.pairing))
+
+    def _pair_panel(request: Request) -> str:
+        return _render(templates, "partials/pair_panel.html", pairing=request.app.state.pairing)
+
+    # Manual pairing (monloader-style): the operator connects, the panel
+    # polls every 2s while waiting, cancel aborts, remove tears down both ends.
+    @app.post("/api/pair/connect", response_class=HTMLResponse, dependencies=[Depends(require_auth), Depends(require_csrf)])
+    def pair_connect(request: Request) -> HTMLResponse:
+        request.app.state.pairing.connect()
+        return HTMLResponse(_pair_panel(request))
+
+    @app.post("/api/pair/poll", response_class=HTMLResponse, dependencies=[Depends(require_auth), Depends(require_csrf)])
+    def pair_poll(request: Request) -> HTMLResponse:
+        return HTMLResponse(_pair_panel(request))
+
+    @app.post("/api/pair/cancel", response_class=HTMLResponse, dependencies=[Depends(require_auth), Depends(require_csrf)])
+    def pair_cancel(request: Request) -> HTMLResponse:
+        request.app.state.pairing.cancel()
+        return HTMLResponse(_pair_panel(request))
+
+    @app.post("/api/pair/remove", response_class=HTMLResponse, dependencies=[Depends(require_auth), Depends(require_csrf)])
+    def pair_remove_web(request: Request) -> HTMLResponse:
+        request.app.state.pairing.remove()
+        return HTMLResponse(_pair_panel(request))
 
     @app.get("/api/results", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
     def results(request: Request, page: int = 1, filter: str = "all") -> HTMLResponse:
@@ -219,51 +295,106 @@ def create_app(settings: Settings) -> FastAPI:
             )
         )
 
-    @app.post("/api/pause", dependencies=[Depends(require_auth)])
+    @app.post("/api/pause", dependencies=[Depends(require_auth), Depends(require_csrf)])
     def pause(request: Request) -> Response:
         request.app.state.pipeline.pause()
         return Response(status_code=204)
 
-    @app.post("/api/resume", dependencies=[Depends(require_auth)])
+    @app.post("/api/resume", dependencies=[Depends(require_auth), Depends(require_csrf)])
     def resume(request: Request) -> Response:
         request.app.state.pipeline.resume()
         return Response(status_code=204)
 
-    @app.post("/api/retry", dependencies=[Depends(require_auth)])
+    @app.post("/api/retry", dependencies=[Depends(require_auth), Depends(require_csrf)])
     def retry(request: Request) -> Response:
         state = request.app.state
         count = state.pipeline.retry_failed()
         state.bus.publish("notice", {"text": f"retrying {count} failed"})
         return Response(status_code=204)
 
-    @app.post("/api/clear-results", dependencies=[Depends(require_auth)])
+    @app.post("/api/clear-results", dependencies=[Depends(require_auth), Depends(require_csrf)])
     def clear_results(request: Request) -> Response:
         count = request.app.state.pipeline.clear_results()
         request.app.state.bus.publish("notice", {"text": f"cleared {count} results"})
         return Response(status_code=204)
 
-    @app.post("/api/clear-tasks", dependencies=[Depends(require_auth)])
+    @app.post("/api/clear-tasks", dependencies=[Depends(require_auth), Depends(require_csrf)])
     def clear_tasks(request: Request) -> Response:
         count = request.app.state.pipeline.clear_tasks()
         request.app.state.bus.publish("notice", {"text": f"cleared {count} tasks"})
         return Response(status_code=204)
 
-    @app.post("/api/settings", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
+    def _settings_render(request: Request, **extra: Any) -> HTMLResponse:
+        return HTMLResponse(
+            _render(
+                templates,
+                "partials/settings_page.html",
+                **_page_ctx(request, active_nav="settings"),
+                **extra,
+            )
+        )
+
+    # Hot-applicable fields; everything in SettingsPatch not listed here
+    # (addr, state, resume) needs a restart and is only written back.
+    _HOT_FIELDS = {
+        "ep", "threshold", "character_threshold", "general_topk",
+        "window", "prefetch_threads", "workers", "skip_tagged",
+        "monbooru", "url", "via", "backend", "model_dir", "activation",
+        "log_level", "webui_token",
+    }
+
+    @app.post("/api/settings", response_class=HTMLResponse, dependencies=[Depends(require_auth), Depends(require_csrf)])
     async def patch_settings(request: Request) -> HTMLResponse:
         form = await request.form()
-        patch = SettingsPatch(
-            **{k: v for k, v in form.items() if k in SettingsPatch.model_fields}
-        )
+        section = str(form.get("_section", ""))
+        try:
+            patch = SettingsPatch(
+                **{k: v for k, v in form.items() if k in SettingsPatch.model_fields}
+            )
+        except Exception:
+            return _settings_render(
+                request, flash="invalid value", flash_kind="err", saved_in=section
+            )
         changed = patch.model_dump(exclude_unset=True, exclude_none=True)
         if not changed:
-            return HTMLResponse(_render(templates, "settings.html", **_page_ctx(request)))
+            return _settings_render(request)
         settings.write_back(changed)
-        runtime.update(**changed)
-        settings.ep = runtime.ep  # keep the mirror accurate for /health
-        request.app.state.backend.reload(runtime)
+
+        hot = set(changed) & _HOT_FIELDS
+        if hot:
+            runtime.update(**{k: changed[k] for k in hot})
+            # Keep the settings object (and /health, templates) in sync.
+            for key in hot:
+                if key in Settings.model_fields:
+                    setattr(settings, key, changed[key])
+        if "monbooru" in changed:
+            request.app.state.pairing.set_base_url(changed["monbooru"])
+            request.app.state.client.set_base_url(changed["monbooru"])
+        if "url" in changed:
+            request.app.state.pairing.set_self_url(changed["url"])
+        if "via" in changed:
+            request.app.state.pipeline.set_via(changed["via"])
+        if "log_level" in changed:
+            level = getattr(logging, changed["log_level"].upper(), logging.INFO)
+            logging.getLogger("montagger").setLevel(level)
+        if "webui_token" in changed:
+            settings.webui_token = changed["webui_token"]
+        if "backend" in changed:
+            new_backend = get_backend(
+                changed["backend"], runtime, {"client": request.app.state.client}
+            )
+            request.app.state.backend = new_backend
+            request.app.state.pipeline.set_backend(new_backend)
+        elif hot & {"ep", "model_dir", "activation"}:
+            request.app.state.backend.reload(runtime)
         request.app.state.pipeline.reconfigure()
-        request.app.state.bus.publish("notice", {"text": "settings saved"})
-        return HTMLResponse(_render(templates, "settings.html", **_page_ctx(request)))
+
+        message = "saved"
+        restart_only = set(changed) & {"addr", "state", "resume"}
+        if restart_only:
+            message = "saved; takes effect after restart"
+        request.app.state.bus.publish("notice", {"text": message})
+        return _settings_render(request, flash=message, flash_kind="ok", saved_in=section)
 
     # ---- SSE ------------------------------------------------------------
 

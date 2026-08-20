@@ -43,10 +43,27 @@ def test_health_public(app: TestClient) -> None:
 
 
 def test_dashboard_requires_auth(app: TestClient) -> None:
-    assert app.get("/").status_code == 401
+    resp = app.get("/")
+    assert resp.status_code == 401
+    assert "sign in" in resp.text  # the login page, not a bare 401
     resp = app.get("/", headers={"Authorization": "Bearer tok"})
     assert resp.status_code == 200
     assert "montagger" in resp.text
+
+
+def test_login_flow(app: TestClient) -> None:
+    # wrong token stays on the login page
+    resp = app.post("/api/login", data={"token": "wrong"})
+    assert resp.status_code == 401
+    assert "wrong token" in resp.text
+    assert app.get("/").status_code == 401
+
+    # right token issues a session cookie and unlocks the pages
+    resp = app.post("/api/login", data={"token": "tok"}, follow_redirects=False)
+    assert resp.status_code == 303
+    assert "montagger_session" in resp.headers["set-cookie"]
+    assert app.get("/").status_code == 200
+    assert app.get("/api/results?page=1&filter=all").status_code == 200
 
 
 def test_relay_requires_peer(app: TestClient) -> None:
@@ -76,7 +93,7 @@ def test_settings_write_back(app: TestClient, tmp_path: pytest.TempPathFactory, 
     resp = app.post(
         "/api/settings",
         data={"window": "9", "threshold": "0.5"},
-        headers={"Authorization": "Bearer tok"},
+        headers={"Authorization": "Bearer tok", "X-Montagger": app.app.state.csrf},
     )
     assert resp.status_code == 200
     time.sleep(0.1)
@@ -85,11 +102,49 @@ def test_settings_write_back(app: TestClient, tmp_path: pytest.TempPathFactory, 
     assert "threshold = 0.5" in raw
 
 
+def test_settings_hot_apply(app: TestClient, tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Everything hot-editable takes effect immediately, not on restart."""
+    monkeypatch.chdir(tmp_path)
+    headers = {"Authorization": "Bearer tok", "X-Montagger": app.app.state.csrf}
+    resp = app.post(
+        "/api/settings",
+        data={
+            "_section": "monbooru",
+            "monbooru": "http://127.0.0.1:9090",
+            "via": "webui",
+        },
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    assert app.app.state.pairing.monbooru_url == "http://127.0.0.1:9090"
+    assert app.app.state.client.base == "http://127.0.0.1:9090"
+    assert app.app.state.pipeline.via == "webui"
+
+    resp = app.post("/api/settings", data={"webui_token": "newtok"}, headers=headers)
+    assert resp.status_code == 200
+    assert app.get("/", headers={"Authorization": "Bearer newtok"}).status_code == 200
+    assert app.get("/", headers={"Authorization": "Bearer tok"}).status_code == 401
+
+
 def test_settings_page_shows_sources(app: TestClient) -> None:
     resp = app.get("/settings", headers={"Authorization": "Bearer tok"})
     assert resp.status_code == 200
     assert "execution provider" in resp.text
     assert "restart required" in resp.text
+
+
+def test_pairing_is_manual(app: TestClient) -> None:
+    # the settings page offers the connect button while unpaired
+    resp = app.get("/settings", headers={"Authorization": "Bearer tok"})
+    assert "connect to monbooru" in resp.text
+
+    # connect requires the csrf header like every state change
+    resp = app.post("/api/pair/connect", headers={"Authorization": "Bearer tok"})
+    assert resp.status_code == 403
+    headers = {"Authorization": "Bearer tok", "X-Montagger": app.app.state.csrf}
+    resp = app.post("/api/pair/connect", headers=headers)
+    assert resp.status_code == 200
+    assert "could not reach monbooru" in resp.text  # the fixture monbooru is down
 
 
 def test_sse_requires_token(app: TestClient) -> None:
@@ -100,7 +155,7 @@ def test_sse_requires_token(app: TestClient) -> None:
 
 
 def test_actions_accept_htmx(app: TestClient) -> None:
-    headers = {"Authorization": "Bearer tok", "X-Montagger": "1"}
+    headers = {"Authorization": "Bearer tok", "X-Montagger": app.app.state.csrf}
     resp = app.post("/api/retry", headers=headers)
     assert resp.status_code == 204
     resp = app.post("/api/pause", headers=headers)

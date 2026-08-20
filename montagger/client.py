@@ -53,6 +53,11 @@ class MonbooruClient:
             follow_redirects=True,
         )
 
+    def set_base_url(self, url: str) -> None:
+        """Hot-update the monbooru address (settings save). The shared
+        httpx client is host-agnostic, so only the path base changes."""
+        self.base = url.rstrip("/")
+
     # ---- core calls -----------------------------------------------------
 
     def fetch_image(self, image_id: int) -> bytes:
