@@ -104,7 +104,8 @@ class OnnxBackend(Backend):
         if ort is None:  # pragma: no cover
             raise RuntimeError("onnxruntime is not installed")
         self.runtime = runtime
-        self.client = deps.get("client")
+        self.client_for = deps.get("client_for")
+        self.category_url = deps.get("category_url") or (lambda: "")
         self.model_dir = Path(getattr(runtime, "model_dir", "."))
         self.activation = getattr(runtime, "activation", "sigmoid_in_model")
         self._lock = threading.RLock()
@@ -168,10 +169,15 @@ class OnnxBackend(Backend):
             self._labels = labels
 
     def _refresh_categories(self) -> None:
-        if self.client is None:
+        if self.client_for is None:
             return
         try:
-            names = set(self.client.categories())
+            # Categories are global to the monbooru family; use any paired
+            # instance (the first complete one) as the source.
+            url = self.category_url()
+            if not url:
+                return
+            names = set(self.client_for(url).categories())
             if names:
                 self._valid_categories = names
         except Exception:

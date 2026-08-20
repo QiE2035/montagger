@@ -1,31 +1,43 @@
-"""Pairing with monbooru - manual, operator-initiated (like monloader).
+"""Pairing with monbooru - manual, operator-initiated, one-to-many.
 
 montagger never reaches out on its own: start() only restores stored
-credentials from disk. To pair, the operator clicks "connect to monbooru"
-in the settings page, which sends one offer and starts polling for
-approval; the WebUI re-renders the panel every 2s while an attempt is in
-flight. Credentials live in <state>/credentials.json (0600) as
-{"token", "peer"}: token authenticates our API calls to monbooru, peer is
-the secret monbooru presents on every request it sends to us. A 401/403
-from the API drops the credentials and leaves the operator to connect
-again - never a silent re-offer.
+credentials. To pair, the operator clicks "connect to monbooru" in the
+settings page (per monbooru url), which sends one offer and starts polling
+for approval; the WebUI re-renders the panel every 2s while an attempt is
+in flight.
+
+Credentials live in montagger.toml as a [[pairing]] array (like
+monloader's [[auth.tokens]]), one entry per monbooru instance:
+
+    [[pairing]]
+    url = "http://127.0.0.1:8080"
+    token = "..."   # authenticates our API calls to that monbooru
+    peer = "..."    # the secret that monbooru presents when calling us
+    created_at = "..."
+
+A 401/403 from the API drops that instance's credentials and leaves the
+operator to connect again - never a silent re-offer. Inbound requests
+present the peer secret, which is unique per pairing, so the source
+monbooru is recovered by matching it against the entries.
 """
 
 from __future__ import annotations
 
 import hmac
-import json
 import logging
 import secrets
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 import httpx
+import tomlkit
+import tomllib
 
 from montagger import __version__
-from montagger.settings import BUTTONS
+from montagger.settings import BUTTONS, TOML_LOCK
 
 log = logging.getLogger(__name__)
 
@@ -34,100 +46,136 @@ SCOPES = ["read", "write"]
 POLL_INTERVAL = 2.0
 
 
-class Credentials:
-    def __init__(self, token: str = "", peer: str = "") -> None:
-        self.token = token
-        self.peer = peer
+@dataclass
+class PairingEntry:
+    url: str
+    token: str = ""
+    peer: str = ""
+    created_at: str = ""
 
     @property
     def complete(self) -> bool:
         return bool(self.token and self.peer)
 
 
+def _entries_to_toml(entries: list[PairingEntry]) -> Any:
+    """Build a tomlkit array-of-tables that survives round-trips."""
+    aot = tomlkit.aot()
+    for entry in entries:
+        table = tomlkit.table()
+        table["url"] = entry.url
+        table["token"] = entry.token
+        table["peer"] = entry.peer
+        table["created_at"] = entry.created_at
+        aot.append(table)
+    return aot
+
+
 class Pairing:
     def __init__(
         self,
-        monbooru_url: str,
         self_url: str,
-        state_dir: Path,
+        config_path: Path,
         on_change: Callable[[bool], None] | None = None,
     ) -> None:
-        self.monbooru_url = monbooru_url.rstrip("/")
         self.self_url = self_url
-        self.state_dir = Path(state_dir)
+        self.config_path = Path(config_path)
         self.on_change = on_change
         self.http = httpx.Client(timeout=httpx.Timeout(connect=10, read=30, write=30, pool=10))
-        self._lock = threading.Lock()
-        self._creds = Credentials()
+        self._lock = threading.RLock()
+        self._entries: list[PairingEntry] = []
         self._stopping = threading.Event()
-        self._attempt_lock = threading.Lock()
-        self._attempt: dict[str, str] | None = None  # {"request_id", "peer"} in flight
+        self._attempt: dict[str, str] | None = None  # {"url", "request_id", "peer"}
         self._attempt_stop = threading.Event()
+        self._attempt_lock = threading.Lock()
         self._message = ""  # last operator-facing message (connect/deny/expire...)
 
     # ---- public API -----------------------------------------------------
 
     def start(self) -> None:
-        """Restore stored credentials. No offer is sent until the operator
-        clicks connect in the WebUI."""
-        self._ensure_loaded()
+        """Restore stored credentials from montagger.toml. No offer is sent
+        until the operator clicks connect in the WebUI."""
+        with self._lock:
+            self._entries = self._load()
+        complete = sum(1 for e in self._entries if e.complete)
+        if complete:
+            log.info("pairing: restored %d stored pairing(s)", complete)
 
     def stop(self) -> None:
         self._stopping.set()
         self.cancel()
 
-    def token(self) -> str:
-        return self._ensure_loaded().token
-
-    def peer(self) -> str:
-        return self._ensure_loaded().peer
+    def entries(self) -> list[PairingEntry]:
+        with self._lock:
+            return list(self._entries)
 
     def paired(self) -> bool:
-        return self._ensure_loaded().complete
+        with self._lock:
+            return any(e.complete for e in self._entries)
+
+    def entry_for_url(self, url: str) -> PairingEntry | None:
+        url = url.rstrip("/")
+        with self._lock:
+            for entry in self._entries:
+                if entry.url == url:
+                    return entry
+        return None
+
+    def entry_for_peer(self, presented: str) -> PairingEntry | None:
+        """Recover the source monbooru from the peer secret it presents."""
+        with self._lock:
+            for entry in self._entries:
+                if entry.peer and hmac.compare_digest(presented, entry.peer):
+                    return entry
+        return None
+
+    def token_for(self, url: str) -> str:
+        entry = self.entry_for_url(url)
+        return entry.token if entry else ""
+
+    def is_authentic(self, presented: str) -> bool:
+        return self.entry_for_peer(presented) is not None
 
     def waiting(self) -> bool:
         """An offer was sent and is awaiting approval in monbooru."""
         with self._attempt_lock:
             return self._attempt is not None
 
+    def waiting_url(self) -> str:
+        with self._attempt_lock:
+            return (self._attempt or {}).get("url", "")
+
     def state_message(self) -> str:
         """Last operator-facing message (why the last attempt failed etc)."""
         return self._message
 
-    def is_authentic(self, presented: str) -> bool:
-        """Constant-time check that a request really came from monbooru."""
-        with self._lock:
-            peer = self._creds.peer
-        return bool(peer) and hmac.compare_digest(presented, peer)
+    def challenged(self, url: str) -> None:
+        """401/403 from the API: drop that instance's credentials, no
+        re-offer - the operator must connect again in the WebUI."""
+        self._drop_entry(url)
+        self._message = f"monbooru {url} rejected the credentials; connect again to re-pair"
 
-    def challenged(self) -> None:
-        """401/403 from the API: drop the credentials, no re-offer - the
-        operator must connect again in the WebUI."""
-        self.forget()
-        self._message = "monbooru rejected the credentials; connect again to re-pair"
+    def unpair(self, presented: str) -> None:
+        """The pairing was removed on the monbooru side (pair/remove call)."""
+        entry = self.entry_for_peer(presented)
+        message = "the pairing was removed on the monbooru side; connect again to re-pair"
+        if entry:
+            self._drop_entry(entry.url)
+            message = f"the pairing with {entry.url} was removed on the monbooru side; connect again to re-pair"
+        self._message = message
 
-    def set_base_url(self, url: str) -> None:
-        """Hot-update the monbooru address (used from the settings save).
-        The shared httpx client is host-agnostic; stored credentials are
-        kept, they may still be valid after a port change."""
-        self.monbooru_url = url.rstrip("/")
-
-    def set_self_url(self, url: str) -> None:
-        """Hot-update the address monbooru calls us back at."""
-        self.self_url = url
-
-    def unpair(self) -> None:
-        """The operator removed the pairing on the monbooru side."""
-        self.forget()
-        self._message = "the pairing was removed on the monbooru side; connect again to re-pair"
-
-    def connect(self) -> None:
-        """Manual connect: send one pairing offer, then poll for approval in
-        a background thread. Failures surface via state_message()."""
-        with self._lock:
-            if self._creds.complete:
-                self._message = "already paired; remove the pairing first to re-pair"
-                return
+    def connect(self, url: str) -> None:
+        """Manual connect: send one pairing offer to the given monbooru,
+        then poll for approval in a background thread. Failures surface via
+        state_message()."""
+        url = url.strip().rstrip("/")
+        if not url:
+            self._message = "enter the monbooru address to pair with"
+            return
+        entry = self.entry_for_url(url)
+        if entry and entry.complete:
+            self._message = f"already paired with {url}; remove that pairing first"
+            return
         with self._attempt_lock:
             if self._attempt is not None:
                 self._message = "waiting"
@@ -135,7 +183,7 @@ class Pairing:
         try:
             peer = secrets.token_urlsafe(32)
             resp = self.http.post(
-                f"{self.monbooru_url}/api/v1/pair/request",
+                f"{url}/api/v1/pair/request",
                 json={
                     "app": APP_NAME,
                     "url": self.self_url,
@@ -146,22 +194,22 @@ class Pairing:
                 },
             )
         except httpx.TransportError as exc:
-            self._message = f"could not reach monbooru: {exc}"
+            self._message = f"could not reach monbooru {url}: {exc}"
             return
         if resp.status_code >= 400:
-            self._message = f"monbooru refused the request: {resp.status_code} {resp.text[:200]}"
+            self._message = f"monbooru {url} refused the request: {resp.status_code} {resp.text[:200]}"
             return
         request_id = (resp.json() or {}).get("request_id")
         if not request_id:
-            self._message = "monbooru answered without a request_id"
+            self._message = f"monbooru {url} answered without a request_id"
             return
         with self._attempt_lock:
-            self._attempt = {"request_id": request_id, "peer": peer}
+            self._attempt = {"url": url, "request_id": request_id, "peer": peer}
         self._attempt_stop.clear()
         threading.Thread(
-            target=self._poll_loop, args=(request_id, peer), name="pairing-poll", daemon=True
+            target=self._poll_loop, args=(url, request_id, peer), name="pairing-poll", daemon=True
         ).start()
-        log.info("pairing: offered pairing with %s; waiting for approval", self.monbooru_url)
+        log.info("pairing: offered pairing with %s; waiting for approval", url)
         self._notify()
 
     def cancel(self) -> None:
@@ -173,44 +221,48 @@ class Pairing:
                 self._message = ""
         self._notify()
 
-    def remove(self) -> None:
-        """Operator-side removal: drop our credentials and ask monbooru to
-        drop its side too (one click tears down both ends, like monloader)."""
-        with self._lock:
-            token = self._creds.token
-        self.forget()
+    def remove(self, url: str) -> None:
+        """Operator-side removal: drop the stored credentials and ask that
+        monbooru to drop its side too (one click tears down both ends, like
+        monloader)."""
+        url = url.rstrip("/")
+        entry = self.entry_for_url(url)
+        token = entry.token if entry else ""
+        self._drop_entry(url)
         self._message = ""
         if token:
             try:
                 resp = self.http.post(
-                    f"{self.monbooru_url}/api/v1/pair/remove",
+                    f"{url}/api/v1/pair/remove",
                     headers={"Authorization": f"Bearer {token}"},
                 )
                 if resp.status_code >= 400:
                     self._message = (
-                        "removed locally; monbooru could not be reached - remove the pairing there by hand"
+                        f"removed locally; monbooru {url} could not be reached - remove the pairing there by hand"
                     )
             except httpx.TransportError:
                 self._message = (
-                    "removed locally; monbooru could not be reached - remove the pairing there by hand"
+                    f"removed locally; monbooru {url} could not be reached - remove the pairing there by hand"
                 )
         self._notify()
 
+    def set_self_url(self, url: str) -> None:
+        """Hot-update the address monbooru calls us back at."""
+        self.self_url = url
+
     # ---- internals ------------------------------------------------------
 
-    def _poll_loop(self, request_id: str, peer: str) -> None:
+    def _poll_loop(self, url: str, request_id: str, peer: str) -> None:
         """Poll pair/status until the offer is approved, expires or is
         denied, or the operator cancels."""
         while not self._attempt_stop.is_set():
             try:
-                poll = self.http.get(f"{self.monbooru_url}/api/v1/pair/status?id={request_id}")
+                poll = self.http.get(f"{url}/api/v1/pair/status?id={request_id}")
             except httpx.TransportError:
-                self._finish_attempt(
-                    request_id, "monbooru unreachable; the attempt was dropped, try again"
-                )
+                self._finish_attempt(url, "monbooru unreachable; the attempt was dropped, try again")
                 return
             if poll.status_code == 404:
-                self._finish_attempt(request_id, "the pairing offer expired; connect again")
+                self._finish_attempt(url, "the pairing offer expired; connect again")
                 return
             if poll.status_code >= 400:
                 self._attempt_stop.wait(POLL_INTERVAL)
@@ -218,71 +270,79 @@ class Pairing:
             answer = poll.json()
             token = answer.get("token") or ""
             if token:
-                self._set(Credentials(token=token, peer=peer))
-                self._save()
-                self._finish_attempt(request_id, "")
-                log.info("paired with %s", self.monbooru_url)
+                with self._lock:
+                    self._entries = [e for e in self._entries if e.url != url]
+                    self._entries.append(
+                        PairingEntry(
+                            url=url,
+                            token=token,
+                            peer=peer,
+                            created_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                        )
+                    )
+                    self._save(self._entries)
+                self._finish_attempt(url, "")
+                log.info("paired with %s", url)
                 return
             if answer.get("status") == "denied":
-                self._finish_attempt(request_id, "the pairing was denied in monbooru")
+                self._finish_attempt(url, "the pairing was denied in monbooru")
                 return
             self._attempt_stop.wait(POLL_INTERVAL)
         # cancelled: cancel() already cleared the attempt
 
-    def _finish_attempt(self, request_id: str, message: str) -> None:
+    def _finish_attempt(self, url: str, message: str) -> None:
         """Clear the attempt only if it is still the one this poller owns."""
         with self._attempt_lock:
             att = self._attempt
-            if att is None or att["request_id"] != request_id:
+            if att is None or att.get("url") != url:
                 return  # cancelled or superseded
             self._attempt = None
         self._message = message  # an empty message clears stale ones
         self._notify()
 
+    def _drop_entry(self, url: str) -> None:
+        url = url.rstrip("/")
+        with self._lock:
+            before = len(self._entries)
+            self._entries = [e for e in self._entries if e.url != url]
+            if len(self._entries) != before:
+                self._save(self._entries)
+        self._notify()
+
     def _notify(self) -> None:
         if self.on_change:
-            self.on_change(self._creds.complete)
+            self.on_change(self.paired())
 
-    def forget(self) -> None:
-        with self._lock:
-            self._creds = Credentials()
-        try:
-            self._path().unlink(missing_ok=True)
-        except OSError:
-            pass
-        self._notify()
+    # ---- toml persistence ----------------------------------------------
 
-    def _set(self, creds: Credentials) -> None:
-        with self._lock:
-            self._creds = creds
-        self._notify()
+    def _load(self) -> list[PairingEntry]:
+        with TOML_LOCK:
+            try:
+                doc = tomllib.loads(self.config_path.read_text(encoding="utf-8"))
+            except OSError:
+                return []
+            raw = doc.get("pairing") or []
+            entries: list[PairingEntry] = []
+            for item in raw:
+                url = str(item.get("url", "")).strip().rstrip("/")
+                if not url:
+                    continue
+                entries.append(
+                    PairingEntry(
+                        url=url,
+                        token=str(item.get("token", "")),
+                        peer=str(item.get("peer", "")),
+                        created_at=str(item.get("created_at", "")),
+                    )
+                )
+            return entries
 
-    def _ensure_loaded(self) -> Credentials:
-        with self._lock:
-            if not self._creds.complete:
-                stored = self._load()
-                if stored:
-                    self._creds = Credentials(**stored)
-            return self._creds
-
-    def _path(self) -> Path:
-        return self.state_dir / "credentials.json"
-
-    def _load(self) -> dict[str, str]:
-        try:
-            raw = json.loads(self._path().read_text(encoding="utf-8"))
-            return {k: str(raw[k]) for k in ("token", "peer") if k in raw}
-        except (OSError, json.JSONDecodeError):
-            return {}
-
-    def _save(self) -> None:
-        self.state_dir.mkdir(parents=True, exist_ok=True)
-        path = self._path()
-        path.write_text(
-            json.dumps({"token": self._creds.token, "peer": self._creds.peer}, indent=2),
-            encoding="utf-8",
-        )
-        try:
-            path.chmod(0o600)
-        except OSError:  # Windows: chmod is a no-op for this purpose
-            pass
+    def _save(self, entries: list[PairingEntry]) -> None:
+        with TOML_LOCK:
+            path = self.config_path
+            try:
+                doc = tomlkit.parse(path.read_text(encoding="utf-8"))
+            except OSError:
+                doc = tomlkit.document()
+            doc["pairing"] = _entries_to_toml(entries)
+            path.write_text(tomlkit.dumps(doc), encoding="utf-8")

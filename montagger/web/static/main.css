@@ -259,6 +259,22 @@ form { display: flex; flex-direction: column; gap: 1rem; }
 .saved-hint.ok  { color: var(--success); }
 .saved-hint.err { color: var(--error); }
 
+/* ---- pairing panel (one-to-many) -------------------------------------- */
+
+.pair-connect-form { display: flex; flex-direction: row; gap: 0.5rem; align-items: center; }
+.pair-connect-form input[type="text"] {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  padding: 0.4rem 0.6rem;
+  flex: 0 1 320px;
+}
+.pair-connect-form input:focus { outline: none; border-color: var(--accent); }
+.pair-table { margin-top: 0.5rem; }
+.pair-table td:last-child { text-align: right; }
+
 /* ---- settings (monloader-style shell + sections) ---------------------- */
 
 .settings-shell { display: flex; align-items: stretch; background: var(--bg-surface); border: 1px solid var(--border); }

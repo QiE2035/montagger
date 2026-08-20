@@ -1,4 +1,4 @@
-"""Settings sources: TOML < env < CLI, MONBOORU_URL alias, write-back."""
+"""Settings sources: TOML < env < CLI, write-back."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ def test_defaults(clean_env: None) -> None:
     settings = Settings()
     assert settings.window == 16
     assert settings.backend == "heuristic"
-    assert settings.monbooru == "http://127.0.0.1:8080"
+    assert settings.via == "montagger"
 
 
 def test_toml_is_lowest_source(clean_env: None, tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -42,15 +42,6 @@ def test_toml_is_lowest_source(clean_env: None, tmp_path: pytest.TempPathFactory
     monkeypatch.setattr(sys, "argv", ["montagger", "--window", "20"])
     settings = Settings()
     assert settings.window == 20
-
-
-def test_monbooru_url_alias(clean_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("MONBOORU_URL", "http://example.test:9999")
-    assert Settings().monbooru == "http://example.test:9999"
-
-    # the prefixed form wins
-    monkeypatch.setenv("MONTAGGER_MONBOORU", "http://other.test")
-    assert Settings().monbooru == "http://other.test"
 
 
 def test_cli_implicit_flag(clean_env: None, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -81,18 +72,17 @@ def test_write_back_roundtrip(clean_env: None, tmp_path: pytest.TempPathFactory,
 
 
 def test_toml_sections_map_to_fields(clean_env: None, tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
-    """[server].url and [monbooru].url must land on different fields."""
+    """[server].url and [tagging].via must land on the right fields."""
     config = tmp_path / "montagger.toml"
     config.write_text(
         "[server]\nurl = \"http://127.0.0.1:9999\"\n"
-        "[monbooru]\nurl = \"http://mon.example:8080\"\nvia = \"custom\"\n"
+        "[tagging]\nvia = \"custom\"\n"
         "[log]\nlevel = \"debug\"\n",
         encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
     settings = Settings()
     assert settings.url == "http://127.0.0.1:9999"
-    assert settings.monbooru == "http://mon.example:8080"
     assert settings.via == "custom"
     assert settings.log_level == "debug"
 

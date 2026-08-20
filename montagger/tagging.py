@@ -23,12 +23,13 @@ class RelayPayload(BaseModel):
     image_ids: list[int] = Field(default_factory=list)
 
 
-def relay_answer(pipeline: Any, payload: RelayPayload) -> dict[str, Any]:
-    """Enqueue the ids and build the {ok, message, refresh} answer."""
+def relay_answer(pipeline: Any, payload: RelayPayload, source: str) -> dict[str, Any]:
+    """Enqueue the ids against the source monbooru (recovered from the peer
+    secret) and build the {ok, message, refresh} answer."""
     new = 0
     known = 0
     if payload.image_ids:
-        new, known = pipeline.submit(payload.image_ids)
+        new, known = pipeline.submit(source, payload.image_ids)
     message = f"queued {new} image(s)"
     if known:
         message += f", {known} already known"

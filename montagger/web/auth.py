@@ -22,10 +22,6 @@ log = logging.getLogger(__name__)
 SESSION_COOKIE = "montagger_session"
 
 
-def _peer_secret(request: Request) -> str:
-    return getattr(request.app.state, "pairing", None).peer()  # type: ignore[union-attr]
-
-
 def _webui_token(request: Request) -> str:
     return getattr(request.app.state, "settings", None).webui_token  # type: ignore[union-attr]
 
@@ -33,8 +29,8 @@ def _webui_token(request: Request) -> str:
 def _check(presented: str, request: Request) -> bool:
     if not presented:  # an empty presented secret must never match an empty peer
         return False
-    peer = _peer_secret(request)
-    if peer and hmac.compare_digest(presented, peer):
+    pairing = getattr(request.app.state, "pairing", None)
+    if pairing and pairing.is_authentic(presented):
         return True
     token = _webui_token(request)
     return bool(token) and hmac.compare_digest(presented, token)
@@ -92,12 +88,12 @@ def require_peer(
     request: Request,
     authorization: str | None = Header(default=None),
 ) -> None:
-    """Plugin contract routes: the pairing secret only."""
+    """Plugin contract routes: one of the stored pairing peer secrets."""
     presented = ""
     if authorization and authorization.lower().startswith("bearer "):
         presented = authorization[7:]
-    peer = _peer_secret(request)
-    if not peer or not presented or not hmac.compare_digest(presented, peer):
+    pairing = getattr(request.app.state, "pairing", None)
+    if not pairing or not presented or not pairing.is_authentic(presented):
         raise HTTPException(status_code=401, detail="unauthorized")
 
 

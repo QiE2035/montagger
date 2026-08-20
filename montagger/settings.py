@@ -2,8 +2,8 @@
 
 Three channels, all first-class pydantic-settings sources:
 
-    CLI (built-in CliSettingsSource) > init kwargs > env (MONTAGGER_*,
-    MONBOORU_URL as an ecosystem alias) > montagger.toml > defaults
+    CLI (built-in CliSettingsSource) > init kwargs > env (MONTAGGER_*)
+    > montagger.toml > defaults
 
 The TOML file is the single source of truth that the WebUI writes back to
 via tomlkit (comments and formatting are preserved). Runtime-tunable values
@@ -22,7 +22,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from pydantic import AliasChoices, Field
+from pydantic import Field
 from pydantic_settings import (
     BaseSettings,
     CliSettingsSource,
@@ -66,8 +66,6 @@ BUTTONS: list[dict[str, str]] = [
 FIELD_MAP: dict[str, tuple[str, str]] = {
     "addr": ("server", "addr"),
     "url": ("server", "url"),
-    "monbooru": ("monbooru", "url"),
-    "via": ("monbooru", "via"),
     "state": ("paths", "state"),
     "config": ("paths", "config"),
     "model_dir": ("paths", "model_dir"),
@@ -75,6 +73,7 @@ FIELD_MAP: dict[str, tuple[str, str]] = {
     "ep": ("tagging", "ep"),
     "threshold": ("tagging", "threshold"),
     "character_threshold": ("tagging", "character_threshold"),
+    "via": ("tagging", "via"),
     "activation": ("tagging", "activation"),
     "general_topk": ("tagging", "general_topk"),
     "window": ("pipeline", "window"),
@@ -88,6 +87,11 @@ FIELD_MAP: dict[str, tuple[str, str]] = {
 TOML_TO_FIELD = {
     (section, key): field for field, (section, key) in FIELD_MAP.items()
 }
+
+# Guards montagger.toml read-modify-write cycles: settings.write_back and
+# the pairing store both live in this file, and neither may clobber the
+# other's tables (single process, so a process-local lock suffices).
+TOML_LOCK = threading.RLock()
 
 
 def resolve_config_path() -> Path:
@@ -155,10 +159,6 @@ class Settings(BaseSettings):
 
     # --- listening / pairing ------------------------------------------
     addr: str = "127.0.0.1:8301"  # what we serve on
-    monbooru: str = Field(  # where monbooru answers
-        default="http://127.0.0.1:8080",
-        validation_alias=AliasChoices("MONTAGGER_MONBOORU", "MONBOORU_URL"),
-    )
     url: str = ""  # address monbooru should call us back at; default http://<addr>
     state: Path = Path(".")  # credentials, database and montagger.toml live here
     config: Path = Path("montagger.toml")  # config file used (--config/-c)
@@ -233,22 +233,23 @@ class Settings(BaseSettings):
         import tomlkit
 
         path = resolve_config_path()
-        if path.exists():
-            doc = tomlkit.parse(path.read_text(encoding="utf-8"))
-        else:
-            doc = tomlkit.document()
-        for key, value in values.items():
-            mapped = FIELD_MAP.get(key)
-            if mapped:
-                section, toml_key = mapped
-                table = doc.get(section)
-                if table is None:
-                    table = tomlkit.table()
-                    doc[section] = table
-                table[toml_key] = value
+        with TOML_LOCK:
+            if path.exists():
+                doc = tomlkit.parse(path.read_text(encoding="utf-8"))
             else:
-                doc[key] = value
-        path.write_text(tomlkit.dumps(doc), encoding="utf-8")
+                doc = tomlkit.document()
+            for key, value in values.items():
+                mapped = FIELD_MAP.get(key)
+                if mapped:
+                    section, toml_key = mapped
+                    table = doc.get(section)
+                    if table is None:
+                        table = tomlkit.table()
+                        doc[section] = table
+                    table[toml_key] = value
+                else:
+                    doc[key] = value
+            path.write_text(tomlkit.dumps(doc), encoding="utf-8")
 
     def effective_workers(self) -> int:
         if self.ep == "directml":

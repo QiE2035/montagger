@@ -1,10 +1,12 @@
 """SQLite persistence for tasks and results.
 
-Single table `tasks` doubles as the durable task queue and the result log:
-image_id is the primary key, so repeated pushes deduplicate for free. The
-pipeline owns the single write connection (guarded by a lock); the WebUI
-uses short-lived read connections per request. Schema migrations ride on
-PRAGMA user_version.
+Single table `tasks` doubles as the durable task queue and the result log.
+The primary key is (source, image_id): source is the monbooru instance a
+task came from (its url), so identical ids across paired instances never
+collide and each task knows where to fetch from and write back to. Repeated
+pushes of the same source+id deduplicate for free. The pipeline owns the
+single write connection (guarded by a lock); the WebUI uses short-lived
+read connections per request. Schema migrations ride on PRAGMA user_version.
 """
 
 from __future__ import annotations
@@ -35,6 +37,21 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE INDEX IF NOT EXISTS idx_tasks_status_done ON tasks (status, done_at);
 """
 
+_SCHEMA_V2 = """
+CREATE TABLE tasks (
+    source     TEXT    NOT NULL DEFAULT '',
+    image_id   INTEGER NOT NULL,
+    status     TEXT    NOT NULL DEFAULT 'pending',
+    tags       TEXT    NOT NULL DEFAULT '[]',
+    error      TEXT    NOT NULL DEFAULT '',
+    retries    INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    done_at    INTEGER,
+    PRIMARY KEY (source, image_id)
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_status_done ON tasks (status, done_at);
+"""
+
 
 class Store:
     def __init__(self, db_path: Path) -> None:
@@ -54,79 +71,109 @@ class Store:
             self._w.executescript(_SCHEMA_V1)
             self._w.execute("PRAGMA user_version = 1")
             self._w.commit()
+            version = 1
+        if version < 2:
+            # Multi-instance pairing: tasks become (source, image_id); a
+            # fresh table is cheaper than an ALTER on a compound key.
+            self._w.execute("DROP TABLE IF EXISTS tasks_old")
+            self._w.execute(
+                "CREATE TABLE tasks_old ("
+                "image_id   INTEGER PRIMARY KEY,"
+                "status     TEXT    NOT NULL DEFAULT 'pending',"
+                "tags       TEXT    NOT NULL DEFAULT '[]',"
+                "error      TEXT    NOT NULL DEFAULT '',"
+                "retries    INTEGER NOT NULL DEFAULT 0,"
+                "created_at INTEGER NOT NULL,"
+                "done_at    INTEGER)"
+            )
+            self._w.execute(
+                "INSERT INTO tasks_old (image_id, status, tags, error, retries, created_at, done_at) "
+                "SELECT image_id, status, tags, error, retries, created_at, done_at FROM tasks"
+            )
+            self._w.execute("DROP TABLE tasks")
+            self._w.executescript(_SCHEMA_V2)
+            self._w.execute(
+                "INSERT INTO tasks (source, image_id, status, tags, error, retries, created_at, done_at) "
+                "SELECT '', image_id, status, tags, error, retries, created_at, done_at FROM tasks_old"
+            )
+            self._w.execute("DROP TABLE tasks_old")
+            self._w.execute("PRAGMA user_version = 2")
+            self._w.commit()
 
     # ---- writes (single connection, locked) -----------------------------
 
-    def submit(self, image_ids: list[int]) -> tuple[int, int]:
+    def submit(self, source: str, image_ids: list[int]) -> tuple[int, int]:
         """Insert new tasks. Returns (inserted, already_known)."""
         if not image_ids:
             return 0, 0
         now = int(time.time())
         with self._wlock:
             cur = self._w.executemany(
-                "INSERT OR IGNORE INTO tasks (image_id, status, created_at) VALUES (?, ?, ?)",
-                [(i, PENDING, now) for i in image_ids],
+                "INSERT OR IGNORE INTO tasks (source, image_id, status, created_at) VALUES (?, ?, ?, ?)",
+                [(source, i, PENDING, now) for i in image_ids],
             )
             self._w.commit()
             inserted = cur.rowcount if cur.rowcount >= 0 else len(image_ids)
             return inserted, max(0, len(image_ids) - inserted)
 
-    def mark_processing(self, image_id: int) -> None:
+    def mark_processing(self, source: str, image_id: int) -> None:
         with self._wlock:
             self._w.execute(
-                "UPDATE tasks SET status = ? WHERE image_id = ?", (PROCESSING, image_id)
+                "UPDATE tasks SET status = ? WHERE source = ? AND image_id = ?",
+                (PROCESSING, source, image_id),
             )
             self._w.commit()
 
-    def mark_done(self, image_id: int, tags: list[str]) -> None:
+    def mark_done(self, source: str, image_id: int, tags: list[str]) -> None:
         import json
 
         with self._wlock:
             self._w.execute(
-                "UPDATE tasks SET status = ?, tags = ?, error = '', done_at = ? WHERE image_id = ?",
-                (DONE, json.dumps(tags, ensure_ascii=False), int(time.time()), image_id),
+                "UPDATE tasks SET status = ?, tags = ?, error = '', done_at = ? WHERE source = ? AND image_id = ?",
+                (DONE, json.dumps(tags, ensure_ascii=False), int(time.time()), source, image_id),
             )
             self._w.commit()
 
-    def mark_failed(self, image_id: int, error: str, retries: int) -> None:
+    def mark_failed(self, source: str, image_id: int, error: str, retries: int) -> None:
         with self._wlock:
             self._w.execute(
-                "UPDATE tasks SET status = ?, error = ?, retries = ?, done_at = ? WHERE image_id = ?",
-                (FAILED, error[:2000], retries, int(time.time()), image_id),
+                "UPDATE tasks SET status = ?, error = ?, retries = ?, done_at = ? WHERE source = ? AND image_id = ?",
+                (FAILED, error[:2000], retries, int(time.time()), source, image_id),
             )
             self._w.commit()
 
-    def retry_failed(self) -> list[int]:
-        """Flip failed tasks back to pending; returns their ids for enqueue."""
+    def retry_failed(self) -> list[tuple[str, int]]:
+        """Flip failed tasks back to pending; returns (source, id) pairs."""
         with self._wlock:
             rows = self._w.execute(
-                "SELECT image_id FROM tasks WHERE status = ?", (FAILED,)
+                "SELECT source, image_id FROM tasks WHERE status = ?", (FAILED,)
             ).fetchall()
-            ids = [r[0] for r in rows]
-            if ids:
+            pairs = [(r[0], r[1]) for r in rows]
+            if pairs:
                 self._w.executemany(
-                    "UPDATE tasks SET status = ?, error = '', done_at = NULL WHERE image_id = ?",
-                    [(PENDING, i) for i in ids],
+                    "UPDATE tasks SET status = ?, error = '', done_at = NULL WHERE source = ? AND image_id = ?",
+                    [(PENDING, source, image_id) for source, image_id in pairs],
                 )
                 self._w.commit()
-            return ids
+            return pairs
 
-    def resume_ids(self) -> list[int]:
-        """Ids to re-enqueue at startup: pending (never finished), processing
-        (left over from a crash) and failed (retryable)."""
+    def resume_ids(self) -> list[tuple[str, int]]:
+        """(source, id) pairs to re-enqueue at startup: pending (never
+        finished), processing (left over from a crash) and failed
+        (retryable)."""
         with self._wlock:
             rows = self._w.execute(
-                "SELECT image_id FROM tasks WHERE status IN (?, ?, ?) ORDER BY created_at",
+                "SELECT source, image_id FROM tasks WHERE status IN (?, ?, ?) ORDER BY created_at",
                 (PENDING, PROCESSING, FAILED),
             ).fetchall()
-            ids = [r[0] for r in rows]
-            if ids:
+            pairs = [(r[0], r[1]) for r in rows]
+            if pairs:
                 self._w.executemany(
-                    "UPDATE tasks SET status = ?, done_at = NULL WHERE image_id = ?",
-                    [(PENDING, i) for i in ids],
+                    "UPDATE tasks SET status = ?, done_at = NULL WHERE source = ? AND image_id = ?",
+                    [(PENDING, source, image_id) for source, image_id in pairs],
                 )
-                self._w.commit()
-            return ids
+            self._w.commit()
+            return pairs
 
     def clear_results(self) -> int:
         with self._wlock:
@@ -165,11 +212,12 @@ class Store:
                 f"SELECT COUNT(*) FROM tasks {where}", params
             ).fetchone()[0]
             rows = db.execute(
-                f"SELECT image_id, status, tags, error, retries, created_at, done_at "
+                f"SELECT source, image_id, status, tags, error, retries, created_at, done_at "
                 f"FROM tasks {where} ORDER BY done_at DESC, image_id DESC LIMIT ? OFFSET ?",
                 params + (size, offset),
             ).fetchall()
-        return [dict(zip(("image_id", "status", "tags", "error", "retries", "created_at", "done_at"), r)) for r in rows], total
+        keys = ("source", "image_id", "status", "tags", "error", "retries", "created_at", "done_at")
+        return [dict(zip(keys, r)) for r in rows], total
 
     # ---- lifecycle ------------------------------------------------------
 

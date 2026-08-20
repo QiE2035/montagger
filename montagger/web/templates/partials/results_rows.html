@@ -1,10 +1,10 @@
 <table>
-  <thead><tr><th>id</th><th>status</th><th>tags</th><th>note</th></tr></thead>
+  <thead><tr><th>source</th><th>id</th><th>status</th><th>tags</th><th>note</th></tr></thead>
   <tbody>
     {% for row in rows %}
       {% include "partials/result_row.html" %}
     {% else %}
-    <tr><td class="empty" colspan="4">no results</td></tr>
+    <tr><td class="empty" colspan="5">no results</td></tr>
     {% endfor %}
   </tbody>
 </table>

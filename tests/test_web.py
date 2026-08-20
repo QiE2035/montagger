@@ -5,6 +5,8 @@ from __future__ import annotations
 import threading
 import time
 import sys
+import json
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 from fastapi.testclient import TestClient
@@ -26,8 +28,6 @@ def app(tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> Te
             "montagger",
             "--config", str(config),
             "--state", str(tmp_path),
-            # the CLI name follows the validation alias (see --help)
-            "--MONTAGGER_MONBOORU", "http://127.0.0.1:9",
         ],
     )
     settings = Settings()
@@ -75,9 +75,9 @@ def test_relay_requires_peer(app: TestClient) -> None:
 
 def test_results_paging(app: TestClient) -> None:
     store: Store = app.app.state.store
-    store.submit(list(range(1, 61)))
+    store.submit("http://127.0.0.1:9", list(range(1, 61)))
     for i in range(1, 61):
-        store.mark_done(i, [f"tag{i}"])
+        store.mark_done("http://127.0.0.1:9", i, [f"tag{i}"])
 
     resp = app.get("/api/results?page=1&filter=all", headers={"Authorization": "Bearer tok"})
     assert resp.status_code == 200
@@ -109,15 +109,12 @@ def test_settings_hot_apply(app: TestClient, tmp_path: pytest.TempPathFactory, m
     resp = app.post(
         "/api/settings",
         data={
-            "_section": "monbooru",
-            "monbooru": "http://127.0.0.1:9090",
+            "_section": "tagging",
             "via": "webui",
         },
         headers=headers,
     )
     assert resp.status_code == 200
-    assert app.app.state.pairing.monbooru_url == "http://127.0.0.1:9090"
-    assert app.app.state.client.base == "http://127.0.0.1:9090"
     assert app.app.state.pipeline.via == "webui"
 
     resp = app.post("/api/settings", data={"webui_token": "newtok"}, headers=headers)
@@ -136,7 +133,8 @@ def test_settings_page_shows_sources(app: TestClient) -> None:
 def test_pairing_is_manual(app: TestClient) -> None:
     # the settings page offers the connect button while unpaired
     resp = app.get("/settings", headers={"Authorization": "Bearer tok"})
-    assert "connect to monbooru" in resp.text
+    assert "To pair with a monbooru" in resp.text
+    assert 'name="url"' in resp.text
 
     # connect requires the csrf header like every state change
     resp = app.post("/api/pair/connect", headers={"Authorization": "Bearer tok"})
@@ -144,7 +142,101 @@ def test_pairing_is_manual(app: TestClient) -> None:
     headers = {"Authorization": "Bearer tok", "X-Montagger": app.app.state.csrf}
     resp = app.post("/api/pair/connect", headers=headers)
     assert resp.status_code == 200
-    assert "could not reach monbooru" in resp.text  # the fixture monbooru is down
+    assert "enter the monbooru address" in resp.text
+
+
+class _FakeMonbooru(BaseHTTPRequestHandler):
+    """Approves every pairing instantly; serves images and tag writes."""
+
+    protocol_version = "HTTP/1.1"
+    peer: str = ""
+
+    def log_message(self, *args):  # silence
+        pass
+
+    def _reply(self, code: int, body=None) -> None:
+        data = json.dumps(body).encode() if body is not None else b""
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        if data:
+            self.wfile.write(data)
+
+    def do_POST(self):  # noqa: N802
+        if self.path == "/api/v1/pair/request":
+            self.server.peer_offers += 1
+            self._reply(200, {"request_id": f"req-{self.server.peer_offers}"})
+        elif self.path == "/api/v1/pair/remove":
+            self._reply(200, {"status": "removed"})
+        elif self.path == "/api/v1/images/1/tags":
+            self._reply(200, {"status": "ok"})
+        else:
+            self._reply(404, {"error": "no"})
+
+    def do_GET(self):  # noqa: N802
+        if self.path.startswith("/api/v1/pair/status"):
+            self._reply(200, {"status": "approved", "token": "issued-tok"})
+        else:
+            self._reply(404, {"error": "no"})
+
+
+@pytest.fixture
+def paired_app(app: TestClient, tmp_path: pytest.TempPathFactory):
+    """An app with two live pairings (url + issued token stored in TOML)."""
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _FakeMonbooru)
+    server.peer_offers = 0
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    headers = {"Authorization": "Bearer tok", "X-Montagger": app.app.state.csrf}
+    resp = app.post("/api/pair/connect", data={"url": url}, headers=headers)
+    assert resp.status_code == 200
+    # pairing completes in a poll thread
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline and not app.app.state.pairing.entry_for_url(url):
+        time.sleep(0.05)
+    entry = app.app.state.pairing.entry_for_url(url)
+    assert entry is not None
+    assert _wait_for(lambda: entry.complete)
+    yield app, url, entry
+    server.shutdown()
+    server.server_close()
+
+
+def _wait_for(pred, timeout: float = 8.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if pred():
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def test_relay_routes_by_peer(paired_app: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A relay click from a paired monbooru is tagged back against that same
+    instance - the peer secret recovers the source url."""
+    app, url, entry = paired_app
+    # pause so the worker cannot race past the assertions
+    app.app.state.pipeline.pause()
+    resp = app.post(
+        "/relay/tag",
+        json={"payload": 1, "monbooru": "v1", "image_ids": [1]},
+        headers={"Authorization": f"Bearer {entry.peer}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+    rows, _ = app.app.state.store.results(1, 50, "pending")
+    assert rows[0]["source"] == url
+    assert rows[0]["image_id"] == 1
+
+    # an unknown secret is refused
+    resp = app.post(
+        "/relay/tag",
+        json={"image_ids": [2]},
+        headers={"Authorization": "Bearer unknown"},
+    )
+    assert resp.status_code == 401
 
 
 def test_sse_requires_token(app: TestClient) -> None:

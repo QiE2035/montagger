@@ -1,39 +1,9 @@
 <main id="settings-page" class="settings-content">
   <h1>settings</h1>
 
-  <section class="settings-section" id="monbooru">
-    <h2>monbooru</h2>
-    <form hx-post="/api/settings" hx-target="#settings-page" hx-swap="outerHTML">
-      <input type="hidden" name="_section" value="monbooru">
-      <div class="settings-cols">
-        <div class="field-group">
-          <label for="monbooru_url">monbooru url <span class="badge badge-ok">hot</span></label>
-          <input type="text" id="monbooru_url" name="monbooru" value="{{ settings.monbooru }}">
-          <p class="hint">where montagger sends tags and fetches images from; re-pair if this points to a different instance</p>
-        </div>
-        <div class="field-group">
-          <label for="url">callback url <span class="badge badge-ok">hot</span></label>
-          <input type="text" id="url" name="url" value="{{ settings.url }}">
-          <p class="hint">address monbooru should call us back at; empty means http://addr</p>
-        </div>
-        <div class="field-group">
-          <label for="via">via <span class="badge badge-ok">hot</span></label>
-          <input type="text" id="via" name="via" value="{{ settings.via }}">
-          <p class="hint">source string written into monbooru tags</p>
-        </div>
-      </div>
-      <div class="section-actions">
-        {% if flash and saved_in == "monbooru" %}
-        <span class="saved-hint {{ flash_kind }}">{{ flash }}</span>
-        {% endif %}
-        <button class="btn btn-primary" type="submit">save</button>
-      </div>
-    </form>
-  </section>
-
   <section class="settings-section" id="pairing">
     <h2>pairing</h2>
-    <p class="hint">let monbooru relay tag requests to this montagger instance. pairing only starts when you connect below; approve the request in monbooru to finish it.</p>
+    <p class="hint">let monbooru instances relay tag requests to this montagger. pairing only starts when you connect below; approve the request in that monbooru to finish it.</p>
     {% include "partials/pair_panel.html" %}
   </section>
 
@@ -76,6 +46,11 @@
             {% endfor %}
           </select>
           <p class="hint">onnx reads its model from model_dir; switch rebuilds the session</p>
+        </div>
+        <div class="field-group">
+          <label for="via">via <span class="badge badge-ok">hot</span></label>
+          <input type="text" id="via" name="via" value="{{ settings.via }}">
+          <p class="hint">source string written into monbooru tags</p>
         </div>
       </div>
       <div class="section-actions">
@@ -142,6 +117,11 @@
           <p class="hint">what we serve on</p>
         </div>
         <div class="field-group">
+          <label for="url">callback url <span class="badge badge-ok">hot</span></label>
+          <input type="text" id="url" name="url" value="{{ settings.url }}">
+          <p class="hint">address monbooru should call us back at; empty means http://addr</p>
+        </div>
+        <div class="field-group">
           <label for="state">state <span class="badge badge-warn">restart required</span></label>
           <input type="text" id="state" name="state" value="{{ settings.state }}">
           <p class="hint">credentials, database and montagger.toml live here</p>
@@ -197,7 +177,7 @@
     <table class="cfg-table">
       <thead><tr><th>setting</th><th>value</th><th>source</th></tr></thead>
       <tbody>
-        {% for key in ["addr", "monbooru", "state", "backend", "model_dir", "window", "workers"] %}
+        {% for key in ["addr", "url", "state", "backend", "model_dir", "window", "workers"] %}
         <tr>
           <td>{{ key }}</td>
           <td>{{ settings[key] }}</td>

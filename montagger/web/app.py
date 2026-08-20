@@ -23,6 +23,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from montagger import __version__
+from montagger.settings import resolve_config_path
 from montagger.backends import get_backend
 from montagger.client import MonbooruClient
 from montagger.pairing import Pairing
@@ -53,7 +54,6 @@ class SettingsPatch(BaseModel):
     workers: int | None = Field(default=None, ge=1, le=64)
     skip_tagged: bool | None = None
     resume: bool | None = None
-    monbooru: str | None = None
     url: str | None = None
     via: str | None = None
     backend: str | None = None
@@ -99,29 +99,41 @@ def create_app(settings: Settings) -> FastAPI:
         state.store = store
 
         pairing = Pairing(
-            monbooru_url=settings.monbooru,
             self_url=settings.self_url,
-            state_dir=settings.state,
+            config_path=resolve_config_path(),
             on_change=lambda ok: bus.publish("pair", {"paired": ok}),
         )
         state.pairing = pairing
-        client = MonbooruClient(
-            settings.monbooru,
-            get_token=pairing.token,
-            on_unauthorized=pairing.challenged,
-        )
-        state.client = client
+
+        # One API client per paired monbooru, created on first use so a
+        # pairing added at runtime needs no restart. Unauthenticated 401/403
+        # drops only that instance's credentials.
+        state.clients: dict[str, MonbooruClient] = {}
+
+        def client_for(url: str) -> MonbooruClient:
+            url = url.rstrip("/")
+            client = state.clients.get(url)
+            if client is None:
+                client = MonbooruClient(
+                    url,
+                    get_token=lambda u=url: pairing.token_for(u),
+                    on_unauthorized=lambda u=url: pairing.challenged(u),
+                )
+                state.clients[url] = client
+            return client
+
+        state.client_for = client_for
 
         state.backend = get_backend(
             settings.backend,
             runtime,
-            {"client": client},
+            {"client_for": client_for, "category_url": _category_url(pairing)},
         )
 
         pipeline = Pipeline(
             runtime,
             store,
-            client,
+            client_for,
             state.backend,
             via=settings.via,
             publish=bus.publish,
@@ -130,7 +142,7 @@ def create_app(settings: Settings) -> FastAPI:
         if settings.resume:
             resumed = store.resume_ids()
             if resumed:
-                pipeline.submit(resumed)
+                pipeline.submit_pairs(resumed)
                 log.info("resumed %d task(s) from the database", len(resumed))
         pipeline.start()
         pairing.start()
@@ -141,7 +153,8 @@ def create_app(settings: Settings) -> FastAPI:
         pipeline.stop(drain_timeout=30.0)
         pairing.stop()
         state.backend.close()
-        client.close()
+        for client in state.clients.values():
+            client.close()
         store.close()
 
     app = FastAPI(title="montagger", version=__version__, lifespan=lifespan)
@@ -163,9 +176,9 @@ def create_app(settings: Settings) -> FastAPI:
     async def login(request: Request) -> Response:
         form = await request.form()
         presented = (form.get("token") or "").strip()
-        peer = request.app.state.pairing.peer()
+        pairing = request.app.state.pairing
         ok = bool(presented) and (
-            (peer and hmac.compare_digest(presented, peer))
+            pairing.is_authentic(presented)
             or (settings.webui_token and hmac.compare_digest(presented, settings.webui_token))
         )
         if not ok:
@@ -188,17 +201,21 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.get("/health")
     def health(request: Request) -> dict[str, Any]:
+        entries = request.app.state.pairing.entries()
         return {
             "version": __version__,
             "paired": request.app.state.pairing.paired(),
+            "pairings": len([e for e in entries if e.complete]),
             "backend": settings.backend,
             "ep": runtime.ep,
             "pipeline_paused": request.app.state.pipeline.paused(),
         }
 
     @app.post("/api/v1/pair/remove", dependencies=[Depends(require_peer)])
-    def pair_remove(request: Request) -> JSONResponse:
-        request.app.state.pairing.unpair()
+    async def pair_remove(request: Request) -> JSONResponse:
+        authorization = request.headers.get("authorization", "")
+        presented = authorization[7:] if authorization.lower().startswith("bearer ") else ""
+        request.app.state.pairing.unpair(presented)
         return JSONResponse({"status": "removed"})
 
     @app.post("/relay/tag", dependencies=[Depends(require_peer)])
@@ -208,7 +225,14 @@ def create_app(settings: Settings) -> FastAPI:
             payload = RelayPayload.model_validate_json(raw)
         except Exception:
             return JSONResponse({"ok": False, "message": "could not read the request"})
-        answer = relay_answer(request.app.state.pipeline, payload)
+        # Recover the source monbooru from the peer secret it presents;
+        # messages without a matching pairing are refused.
+        authorization = request.headers.get("authorization", "")
+        presented = authorization[7:] if authorization.lower().startswith("bearer ") else ""
+        entry = request.app.state.pairing.entry_for_peer(presented)
+        if entry is None:
+            return JSONResponse({"ok": False, "message": "unknown pairing"})
+        return JSONResponse(relay_answer(request.app.state.pipeline, payload, entry.url))
         return JSONResponse(answer)
 
     # ---- WebUI pages ----------------------------------------------------
@@ -227,9 +251,11 @@ def create_app(settings: Settings) -> FastAPI:
 
     def _page_ctx(request: Request, active_nav: str = "") -> dict[str, Any]:
         p = request.app.state.pipeline
+        pairing = request.app.state.pairing
         return {
             "version": __version__,
-            "pairing": request.app.state.pairing,
+            "pairing": pairing,
+            "entries": pairing.entries(),
             "runtime": runtime,
             "settings": settings,
             "pipeline": p,
@@ -238,6 +264,19 @@ def create_app(settings: Settings) -> FastAPI:
             "csrf": request.app.state.csrf,
             "active_nav": active_nav,
         }
+
+    def _category_url(pairing: Any) -> Callable[[], str]:
+        """Pick a monbooru for category lookups: any paired instance works
+        (categories are global to the monbooru family), so take the first
+        complete pairing, falling back to a probe against an empty url."""
+
+        def pick() -> str:
+            for entry in pairing.entries():
+                if entry.complete:
+                    return entry.url
+            return ""
+
+        return pick
 
     def _ep_options() -> list[str]:
         try:
@@ -255,13 +294,24 @@ def create_app(settings: Settings) -> FastAPI:
         return HTMLResponse(_render(templates, "partials/pair_light.html", pairing=request.app.state.pairing))
 
     def _pair_panel(request: Request) -> str:
-        return _render(templates, "partials/pair_panel.html", pairing=request.app.state.pairing)
+        pairing = request.app.state.pairing
+        return _render(
+            templates,
+            "partials/pair_panel.html",
+            pairing=pairing,
+            entries=pairing.entries(),
+        )
 
     # Manual pairing (monloader-style): the operator connects, the panel
     # polls every 2s while waiting, cancel aborts, remove tears down both ends.
     @app.post("/api/pair/connect", response_class=HTMLResponse, dependencies=[Depends(require_auth), Depends(require_csrf)])
-    def pair_connect(request: Request) -> HTMLResponse:
-        request.app.state.pairing.connect()
+    async def pair_connect(request: Request) -> HTMLResponse:
+        form = await request.form()
+        url = str(form.get("url", "")).strip()
+        if not url:
+            request.app.state.pairing.connect("")
+        else:
+            request.app.state.pairing.connect(url)
         return HTMLResponse(_pair_panel(request))
 
     @app.post("/api/pair/poll", response_class=HTMLResponse, dependencies=[Depends(require_auth), Depends(require_csrf)])
@@ -274,8 +324,9 @@ def create_app(settings: Settings) -> FastAPI:
         return HTMLResponse(_pair_panel(request))
 
     @app.post("/api/pair/remove", response_class=HTMLResponse, dependencies=[Depends(require_auth), Depends(require_csrf)])
-    def pair_remove_web(request: Request) -> HTMLResponse:
-        request.app.state.pairing.remove()
+    async def pair_remove_web(request: Request) -> HTMLResponse:
+        form = await request.form()
+        request.app.state.pairing.remove(str(form.get("url", "")))
         return HTMLResponse(_pair_panel(request))
 
     @app.get("/api/results", response_class=HTMLResponse, dependencies=[Depends(require_auth)])
@@ -339,7 +390,7 @@ def create_app(settings: Settings) -> FastAPI:
     _HOT_FIELDS = {
         "ep", "threshold", "character_threshold", "general_topk",
         "window", "prefetch_threads", "workers", "skip_tagged",
-        "monbooru", "url", "via", "backend", "model_dir", "activation",
+        "url", "via", "backend", "model_dir", "activation",
         "log_level", "webui_token",
     }
 
@@ -367,9 +418,6 @@ def create_app(settings: Settings) -> FastAPI:
             for key in hot:
                 if key in Settings.model_fields:
                     setattr(settings, key, changed[key])
-        if "monbooru" in changed:
-            request.app.state.pairing.set_base_url(changed["monbooru"])
-            request.app.state.client.set_base_url(changed["monbooru"])
         if "url" in changed:
             request.app.state.pairing.set_self_url(changed["url"])
         if "via" in changed:
@@ -381,7 +429,12 @@ def create_app(settings: Settings) -> FastAPI:
             settings.webui_token = changed["webui_token"]
         if "backend" in changed:
             new_backend = get_backend(
-                changed["backend"], runtime, {"client": request.app.state.client}
+                changed["backend"],
+                runtime,
+                {
+                    "client_for": request.app.state.client_for,
+                    "category_url": _category_url(request.app.state.pairing),
+                },
             )
             request.app.state.backend = new_backend
             request.app.state.pipeline.set_backend(new_backend)
@@ -459,6 +512,7 @@ def _rows_view(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             tags = []
         view.append(
             {
+                "source": row.get("source", ""),
                 "image_id": row.get("image_id"),
                 "status": row.get("status", ""),
                 "tags": tags,

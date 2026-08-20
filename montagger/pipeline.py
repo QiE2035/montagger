@@ -33,27 +33,27 @@ class Pipeline:
         self,
         runtime: Any,
         store: Store,
-        client: Any,
+        client_for: Any,
         backend: Any,
         via: str,
         publish: Callable[[str, dict[str, Any]], None],
     ) -> None:
         self.runtime = runtime
         self.store = store
-        self.client = client
+        self.client_for = client_for
         self.backend = backend
         self.via = via
         self.publish = publish
 
         self._lock = threading.Lock()
         self._cond = threading.Condition(threading.RLock())
-        self._tasks: deque[int] = deque()
-        self._seen: set[int] = set()
-        self._inflight: set[int] = set()
+        self._tasks: deque[tuple[str, int]] = deque()
+        self._seen: set[tuple[str, int]] = set()
+        self._inflight: set[tuple[str, int]] = set()
         self._paused = False
         self._stop = False
 
-        self._ready: deque[tuple[int, Any]] = deque()  # prepared work, window-bound
+        self._ready: deque[tuple[str, int, Any]] = deque()  # prepared work, window-bound
         self._prefetch_threads: set[threading.Thread] = set()
         self._infer_threads: set[threading.Thread] = set()
         self._prefetch_by_id: dict[int, threading.Thread] = {}
@@ -86,19 +86,38 @@ class Pipeline:
             remaining = max(0.0, deadline - time.monotonic())
             thread.join(remaining)
 
-    def submit(self, image_ids: list[int]) -> tuple[int, int]:
+    def submit(self, source: str, image_ids: list[int]) -> tuple[int, int]:
         """Enqueue ids, deduplicating against everything seen so far.
         Returns (new, already_known)."""
         new: list[int] = []
         with self._cond:
             for image_id in image_ids:
-                if image_id not in self._seen:
-                    self._seen.add(image_id)
-                    self._tasks.append(image_id)
+                if (source, image_id) not in self._seen:
+                    self._seen.add((source, image_id))
+                    self._tasks.append((source, image_id))
                     new.append(image_id)
             self._cond.notify_all()
-        inserted, known = self.store.submit(new) if new else (0, len(image_ids))
+        inserted, known = self.store.submit(source, new) if new else (0, len(image_ids))
         return inserted, len(image_ids) - inserted
+
+    def submit_pairs(self, pairs: list[tuple[str, int]]) -> int:
+        """Enqueue (source, id) pairs (retried/resumed tasks) grouped by
+        source. The tasks are already persisted (they failed or were left
+        pending), so the store-level dedup must be bypassed - the queue is
+        authoritative here. Returns the number enqueued."""
+        by_source: dict[str, list[int]] = {}
+        for source, image_id in pairs:
+            by_source.setdefault(source, []).append(image_id)
+        enqueued = 0
+        with self._cond:
+            for src, ids in by_source.items():
+                for image_id in ids:
+                    self._seen.discard((src, image_id))  # allow a retry
+                    self._seen.add((src, image_id))
+                    self._tasks.append((src, image_id))
+                    enqueued += 1
+            self._cond.notify_all()
+        return enqueued
 
     def pause(self) -> None:
         with self._cond:
@@ -117,15 +136,9 @@ class Pipeline:
             return self._paused
 
     def retry_failed(self) -> int:
-        ids = self.store.retry_failed()
-        with self._cond:
-            for image_id in ids:
-                if image_id not in self._seen:
-                    self._seen.add(image_id)
-                self._tasks.append(image_id)
-            self._cond.notify_all()
-        log.info("retrying %d failed task(s)", len(ids))
-        return len(ids)
+        count = self.submit_pairs(self.store.retry_failed())
+        log.info("retrying %d failed task(s)", count)
+        return count
 
     def clear_results(self) -> int:
         return self.store.clear_results()
@@ -262,18 +275,19 @@ class Pipeline:
                     if self._stop or self._is_retired("prefetch", thread_id):
                         return
                     self._cond.wait(timeout=0.5)
-                image_id = self._tasks.popleft()
-                self._inflight.add(image_id)
-            self.store.mark_processing(image_id)
-            if self._skip_requested(image_id):
+                source, image_id = self._tasks.popleft()
+                self._inflight.add((source, image_id))
+            client = self.client_for(source)
+            self.store.mark_processing(source, image_id)
+            if self._skip_requested(client, source, image_id):
                 with self._cond:
-                    self._inflight.discard(image_id)
+                    self._inflight.discard((source, image_id))
                     self._cond.notify_all()
                 self.publish("result", {"image_id": image_id, "status": "done", "tags": [], "error": ""})
                 self._bump_done(True)
                 continue
             try:
-                data = self.client.fetch_image(image_id)
+                data = client.fetch_image(image_id)
                 from io import BytesIO
 
                 from PIL import Image
@@ -281,20 +295,20 @@ class Pipeline:
                 prepared = self.backend.preprocess(image)
                 del image, data
                 with self._cond:
-                    self._ready.append((image_id, prepared))
+                    self._ready.append((source, image_id, prepared))
                     self._cond.notify_all()
             except Exception as exc:
                 log.warning("prefetch %d failed: %s", image_id, exc)
-                self._finish(image_id, ok=False, error=str(exc), tags=[])
+                self._finish(source, image_id, ok=False, error=str(exc), tags=[])
 
-    def _skip_requested(self, image_id: int) -> bool:
+    def _skip_requested(self, client: Any, source: str, image_id: int) -> bool:
         if not self.runtime.skip_tagged:
             return False
         try:
-            status = self.client.image_status(image_id)
+            status = client.image_status(image_id)
             if status.get("auto_tagged_at"):
                 log.info("skip %d: already tagged by monbooru", image_id)
-                self.store.mark_done(image_id, [])
+                self.store.mark_done(source, image_id, [])
                 return True
         except Exception:
             pass  # treat as not skipped; a failed check must not drop the image
@@ -314,24 +328,24 @@ class Pipeline:
                 continue
             if item is _STOP:
                 return
-            image_id, prepared = item
+            source, image_id, prepared = item
             try:
-                self.store.mark_processing(image_id)
+                self.store.mark_processing(source, image_id)
                 tags = self.backend.tag(prepared, self.runtime)
-                self.client.add_tags(image_id, tags, self.via)
-                self._finish(image_id, ok=True, error="", tags=tags)
+                self.client_for(source).add_tags(image_id, tags, self.via)
+                self._finish(source, image_id, ok=True, error="", tags=tags)
             except Exception as exc:
                 log.warning("infer %d failed: %s", image_id, exc)
-                self._finish(image_id, ok=False, error=str(exc), tags=[])
+                self._finish(source, image_id, ok=False, error=str(exc), tags=[])
             del prepared
 
-    def _finish(self, image_id: int, ok: bool, error: str, tags: list[str]) -> None:
+    def _finish(self, source: str, image_id: int, ok: bool, error: str, tags: list[str]) -> None:
         if ok:
-            self.store.mark_done(image_id, tags)
+            self.store.mark_done(source, image_id, tags)
         else:
-            self.store.mark_failed(image_id, error, 0)
+            self.store.mark_failed(source, image_id, error, 0)
         with self._cond:
-            self._inflight.discard(image_id)
+            self._inflight.discard((source, image_id))
             self._cond.notify_all()
         self.publish("result", {"image_id": image_id, "status": "done" if ok else "failed", "tags": tags, "error": error})
         self._bump_done(ok)

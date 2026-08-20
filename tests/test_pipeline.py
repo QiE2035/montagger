@@ -1,6 +1,7 @@
-"""Pipeline: window bound, dedup, failure isolation, pause/resume.
+"""Pipeline: window bound, dedup, failure isolation, pause/resume,
+multi-instance routing.
 
-Uses a real Store (tmp file) with fake client/backend so the threading is
+Uses a real Store (tmp file) with fake clients/backend so the threading is
 exercised honestly.
 """
 
@@ -15,6 +16,9 @@ from PIL import Image
 from montagger.pipeline import Pipeline
 from montagger.settings import RuntimeState
 from montagger.store import Store
+
+SRC_A = "http://a:8080"
+SRC_B = "http://b:8080"
 
 
 class FakeClient:
@@ -78,11 +82,17 @@ def wait_until(condition, timeout: float = 8.0) -> bool:
 def make_pipeline(tmp_path: pytest.TempPathFactory) -> Pipeline:
     store = Store(tmp_path / "p.db")
     runtime = RuntimeState(window=3, prefetch_threads=2, workers=2)
-    client = FakeClient()
+    clients: dict[str, FakeClient] = {}
     backend = FakeBackend()
     events: list[tuple[str, dict]] = []
 
-    pipe = Pipeline(runtime, store, client, backend, "montagger", lambda kind, data: events.append((kind, data)))
+    def client_for(url: str) -> FakeClient:
+        if url not in clients:
+            clients[url] = FakeClient()
+        return clients[url]
+
+    pipe = Pipeline(runtime, store, client_for, backend, "montagger", lambda kind, data: events.append((kind, data)))
+    pipe.clients = clients  # type: ignore[attr-defined]  # test hook
     pipe.start()
     yield pipe
     pipe.stop(drain_timeout=5.0)
@@ -91,11 +101,11 @@ def make_pipeline(tmp_path: pytest.TempPathFactory) -> Pipeline:
 
 def test_basic_flow(make_pipeline: Pipeline) -> None:
     pipe = make_pipeline
-    new, known = pipe.submit([1, 2, 3])
+    new, known = pipe.submit(SRC_A, [1, 2, 3])
     assert new == 3
     assert known == 0
     assert wait_until(lambda: pipe.stats()["done"] == 3)
-    assert len(pipe.client.tagged) == 3  # type: ignore[attr-defined]
+    assert len(pipe.clients[SRC_A].tagged) == 3  # type: ignore[attr-defined]
     stats = pipe.stats()
     assert stats["pending"] == 0
     assert stats["failed"] == 0
@@ -103,18 +113,31 @@ def test_basic_flow(make_pipeline: Pipeline) -> None:
 
 def test_dedup(make_pipeline: Pipeline) -> None:
     pipe = make_pipeline
-    pipe.submit([1, 2])
-    new, known = pipe.submit([2, 3])
+    pipe.submit(SRC_A, [1, 2])
+    new, known = pipe.submit(SRC_A, [2, 3])
     assert new == 1
     assert known == 1
     assert wait_until(lambda: pipe.stats()["done"] == 3)
+
+
+def test_multi_instance_isolation(make_pipeline: Pipeline) -> None:
+    """Same ids from two instances route to their own clients and never
+    collide in the store."""
+    pipe = make_pipeline
+    pipe.submit(SRC_A, [1])
+    pipe.submit(SRC_B, [1])
+    assert wait_until(lambda: pipe.stats()["done"] == 2)
+    assert pipe.clients[SRC_A].fetched == [1]  # type: ignore[attr-defined]
+    assert pipe.clients[SRC_B].fetched == [1]  # type: ignore[attr-defined]
+    rows, _ = pipe.store.results(1, 50, "done")
+    assert {(r["source"], r["image_id"]) for r in rows} == {(SRC_A, 1), (SRC_B, 1)}
 
 
 def test_window_bound(make_pipeline: Pipeline) -> None:
     pipe = make_pipeline
     pipe.runtime.window = 2  # type: ignore[attr-defined]
     pipe.backend.delay = 0.05  # type: ignore[attr-defined]
-    pipe.submit(list(range(1, 40)))
+    pipe.submit(SRC_A, list(range(1, 40)))
     max_processing = 0
     deadline = time.monotonic() + 6.0
     while time.monotonic() < deadline:
@@ -129,9 +152,9 @@ def test_window_bound(make_pipeline: Pipeline) -> None:
 
 def test_failure_isolation(make_pipeline: Pipeline) -> None:
     pipe = make_pipeline
-    pipe.client.fail_fetch = {2}  # type: ignore[attr-defined]
-    pipe.client.fail_tags = {4}  # type: ignore[attr-defined]
-    pipe.submit([1, 2, 3, 4, 5])
+    pipe.clients.setdefault(SRC_A, FakeClient()).fail_fetch = {2}  # type: ignore[attr-defined]
+    pipe.clients[SRC_A].fail_tags = {4}  # type: ignore[attr-defined]
+    pipe.submit(SRC_A, [1, 2, 3, 4, 5])
     assert wait_until(lambda: pipe.stats()["done"] + pipe.stats()["failed"] == 5)
     stats = pipe.stats()
     assert stats["done"] == 3
@@ -144,22 +167,22 @@ def test_failure_isolation(make_pipeline: Pipeline) -> None:
 
 def test_pause_resume(make_pipeline: Pipeline) -> None:
     pipe = make_pipeline
-    pipe.submit(list(range(1, 20)))
+    pipe.submit(SRC_A, list(range(1, 20)))
     pipe.pause()
     time.sleep(0.3)
-    frozen_fetches = len(pipe.client.fetched)  # type: ignore[attr-defined]
+    frozen_fetches = len(pipe.clients[SRC_A].fetched)  # type: ignore[attr-defined]
     time.sleep(0.3)
-    assert len(pipe.client.fetched) == frozen_fetches  # type: ignore[attr-defined]
+    assert len(pipe.clients[SRC_A].fetched) == frozen_fetches  # type: ignore[attr-defined]
     pipe.resume()
     assert wait_until(lambda: pipe.stats()["done"] == 19)
 
 
 def test_retry_failed(make_pipeline: Pipeline) -> None:
     pipe = make_pipeline
-    pipe.client.fail_tags = {1}  # type: ignore[attr-defined]
-    pipe.submit([1, 2])
+    pipe.clients.setdefault(SRC_A, FakeClient()).fail_tags = {1}  # type: ignore[attr-defined]
+    pipe.submit(SRC_A, [1, 2])
     assert wait_until(lambda: pipe.stats()["failed"] == 1)
-    pipe.client.fail_tags = set()  # type: ignore[attr-defined]
+    pipe.clients[SRC_A].fail_tags = set()  # type: ignore[attr-defined]
     assert pipe.retry_failed() == 1
     assert wait_until(lambda: pipe.stats()["done"] == 2 and pipe.stats()["failed"] == 0)
 
@@ -172,8 +195,8 @@ def test_skip_tagged(make_pipeline: Pipeline) -> None:
         def image_status(self, image_id: int) -> dict:
             return {"auto_tagged_at": "2026-01-01" if image_id == 7 else None}
 
-    pipe.client = SkippedClient()  # type: ignore[attr-defined]
-    pipe.submit([7, 8])
+    pipe.clients[SRC_A] = SkippedClient()  # type: ignore[attr-defined]
+    pipe.submit(SRC_A, [7, 8])
     assert wait_until(lambda: pipe.stats()["done"] == 2)
-    assert 7 not in pipe.client.fetched  # type: ignore[attr-defined]
-    assert 8 in pipe.client.fetched  # type: ignore[attr-defined]
+    assert 7 not in pipe.clients[SRC_A].fetched  # type: ignore[attr-defined]
+    assert 8 in pipe.clients[SRC_A].fetched  # type: ignore[attr-defined]

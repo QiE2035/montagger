@@ -15,17 +15,13 @@ addr = "127.0.0.1:8301"
 # address monbooru should call back at; leave empty for http://<addr>
 url = ""
 
-[monbooru]
-# where monbooru answers (also accepted: MONBOORU_URL environment variable)
-url = "http://127.0.0.1:8080"
-# source string recorded in monbooru for tags we add
-via = "montagger"
-
 [paths]
-# directory holding credentials.json, the tasks database and this file
+# directory holding the tasks database and this file
 state = "."
 # config file to use (--config / MONTAGGER_CONFIG)
 config = "montagger.toml"
+# Pairings live in this file too: each paired monbooru is a [[pairing]]
+# table (url + token + peer) written by the WebUI, one per instance.
 # ONNX model folder; may point into monbooru's model_path subfolder, e.g.
 # "D:\\models\\wd-swinv2"
 model_dir = "."
@@ -43,6 +39,8 @@ character_threshold = 0.5
 activation = "sigmoid_in_model"
 # cap on general tags per image
 general_topk = 40
+# source string recorded in monbooru for tags we add
+via = "montagger"
 
 [pipeline]
 # inflight images: fetch + preprocess + waiting-for-inference + inferring,
