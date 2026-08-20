@@ -10,12 +10,12 @@
 <script src="/static/main.js"></script>
 {% block head %}{% endblock %}
 </head>
-<body hx-headers='{"X-Montagger": "1", "Authorization": "Bearer {{ auth }}" }'>
+<body hx-headers='{"X-Montagger": "{{ csrf }}" }'>
 <header class="topbar">
   <a class="brand" href="/">montagger<span class="brand-dot">.</span></a>
   <nav class="nav">
-    <a href="/">dashboard</a>
-    <a href="/settings">settings</a>
+    <a href="/" {{ 'class="active"' if active_nav == 'dashboard' }}>dashboard</a>
+    <a href="/settings" {{ 'class="active"' if active_nav == 'settings' }}>settings</a>
   </nav>
   <div class="topbar-right">
     <div id="pair-light"
@@ -31,5 +31,13 @@
 {% block content %}{% endblock %}
 </main>
 <footer class="footer">montagger v{{ version }} &middot; {{ stats.total if stats else 0 }} tasks tracked</footer>
+<dialog id="confirm-dialog">
+  <p id="confirm-dialog-msg"></p>
+  <p id="confirm-dialog-detail" class="hint"></p>
+  <div class="dialog-actions">
+    <button type="button" id="confirm-dialog-cancel" class="btn">cancel</button>
+    <button type="button" id="confirm-dialog-ok" class="btn">ok</button>
+  </div>
+</dialog>
 </body>
 </html>

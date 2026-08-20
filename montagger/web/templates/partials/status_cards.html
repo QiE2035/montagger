@@ -19,6 +19,8 @@
   <button class="btn" hx-post="/api/pause" {{ 'disabled' if stats.stopped }}>pause</button>
   {% endif %}
   <button class="btn" hx-post="/api/retry">retry failed</button>
-  <button class="btn btn-danger" hx-post="/api/clear-results" hx-confirm="clear all results?">clear results</button>
-  <button class="btn btn-danger" hx-post="/api/clear-tasks" hx-confirm="clear the whole task list?">clear tasks</button>
+    <button class="btn btn-danger" hx-post="/api/clear-results" hx-confirm="clear all results?"
+      data-confirm-ok="clear" data-confirm-danger="this cannot be undone">clear results</button>
+    <button class="btn btn-danger" hx-post="/api/clear-tasks" hx-confirm="clear the whole task list?"
+      data-confirm-ok="clear" data-confirm-danger="this cannot be undone">clear tasks</button>
 </div>

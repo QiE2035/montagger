@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>montagger - sign in</title>
+<link rel="stylesheet" href="/static/main.css">
+</head>
+<body class="login-body">
+<main class="login-card">
+  <div class="login-brand">montagger<span class="brand-dot">.</span></div>
+  <p class="hint">The WebUI is protected. Sign in with the pairing secret (once paired with monbooru) or the configured webui_token.</p>
+  {% if error %}<div class="flash err">{{ error }}</div>{% endif %}
+  <form method="post" action="/api/login" class="login-form">
+    <input type="password" name="token" placeholder="token" autofocus required>
+    <button class="btn btn-primary" type="submit">sign in</button>
+  </form>
+</main>
+</body>
+</html>

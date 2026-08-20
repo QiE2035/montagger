@@ -12,6 +12,7 @@
   --success:    #7fc99a;
   --warning:    #e8c06a;
   --error:      #ef8f99;
+  --danger:     #cc3333;   /* destructive buttons: monloader's error red */
   --font-mono:  "JetBrains Mono", "Fira Mono", "Courier New", monospace;
 }
 
@@ -54,8 +55,7 @@ a:hover { color: var(--accent-dim); }
 .nav { display: flex; gap: 1.5rem; }
 .nav a {
   font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.04em;
   color: var(--fg-dim);
   padding-bottom: 2px;
   border-bottom: 2px solid transparent;
@@ -86,8 +86,7 @@ a:hover { color: var(--accent-dim); }
 h1, h2 {
   font-size: 11px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.06em;
   color: var(--fg-dim);
   margin-bottom: 0.5rem;
 }
@@ -102,7 +101,7 @@ h1, h2 {
 }
 .stat { display: flex; flex-direction: column; gap: 0.15rem; }
 .stat-num  { font-size: 26px; font-weight: 700; color: var(--fg); }
-.stat-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--fg-dim); }
+.stat-label { font-size: 10px; letter-spacing: 0.04em; color: var(--fg-dim); }
 .num-accent { color: var(--accent); }
 .num-ok  { color: var(--success); }
 .num-err { color: var(--error); }
@@ -128,18 +127,50 @@ h1, h2 {
   font-family: var(--font-mono);
   font-size: 12px;
   cursor: pointer;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.03em;
 }
-.btn:hover:not(.disabled):not([disabled]) { border-color: var(--accent); color: var(--accent); }
+/* Shared hover only brightens the border; .btn-primary:hover and
+  .btn-danger:hover sit after it at equal specificity so their own
+  border/color states win. */
+.btn:hover { border-color: var(--accent); }
+.btn:hover.disabled, .btn:hover[disabled] { border-color: var(--border); }
 .btn-primary { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 700; }
 .btn-primary:hover { background: var(--accent-dim); color: var(--bg); }
-.btn-danger { color: var(--error); }
-.btn-danger:hover { border-color: var(--error); color: var(--error); }
+.btn-danger { color: #fff; background: var(--danger); border-color: var(--danger); }
+.btn-danger:hover { color: var(--danger); background: var(--bg); border-color: var(--danger); }
 .btn-sm { padding: 0.2rem 0.6rem; font-size: 11px; }
 .btn.active { border-color: var(--accent); color: var(--accent); }
 .btn.disabled { opacity: 0.4; cursor: default; }
 .btn[disabled] { opacity: 0.4; cursor: default; }
+
+/* ---- confirm dialog (in-page replacement for the native confirm) ------ */
+
+dialog {
+  background: var(--bg-surface);
+  color: var(--fg);
+  border: 1px solid var(--accent);
+  padding: 20px;
+  min-width: 360px;
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  margin: 0;
+}
+dialog::backdrop { background: color-mix(in srgb, var(--bg) 70%, transparent); }
+#confirm-dialog p { margin-bottom: 14px; overflow-wrap: anywhere; }
+#confirm-dialog .hint { color: var(--fg-dim); font-size: 12px; }
+#confirm-dialog .dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 16px;
+}
+#confirm-dialog .dialog-actions .btn {
+  padding: 0.55rem 1.4rem;
+  font-size: 13px;
+  letter-spacing: 0.05em;
+}
 
 /* ---- tables ------------------------------------------------------------ */
 
@@ -148,8 +179,7 @@ th {
   text-align: left;
   font-weight: 500;
   font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.04em;
   color: var(--fg-dim);
   padding: 0.4rem 0.75rem;
   border-bottom: 1px solid var(--border);
@@ -176,8 +206,7 @@ td.empty { color: var(--fg-dim); text-align: center; padding: 1.5rem; }
   border: 1px solid var(--border);
   color: var(--fg-dim);
   padding: 0.05rem 0.45rem;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.03em;
 }
 .badge-ok    { border-color: var(--accent); color: var(--accent); }
 .badge-warn  { border-color: var(--warning); color: var(--warning); }
@@ -196,8 +225,7 @@ form { display: flex; flex-direction: column; gap: 1rem; }
 .field-group { display: flex; flex-direction: column; gap: 0.3rem; }
 .field-group label {
   font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.04em;
   color: var(--fg-dim);
   display: flex;
   align-items: center;
@@ -218,18 +246,93 @@ form { display: flex; flex-direction: column; gap: 1rem; }
 .field-group input:focus, .field-group select:focus { outline: none; border-color: var(--accent); }
 .hint { font-size: 11px; color: var(--fg-dim); }
 .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; }
-.checkbox { flex-direction: row !important; font-size: 12px !important; text-transform: none !important; letter-spacing: 0.02em !important; color: var(--fg) !important; cursor: pointer; }
+.checkbox { flex-direction: row !important; font-size: 12px !important; letter-spacing: 0.02em !important; color: var(--fg) !important; cursor: pointer; }
 
 .cfg-table { margin-top: 1.5rem; }
 .cfg-note { font-size: 11px; color: var(--fg-dim); }
 
 .flash { min-height: 0; transition: min-height 0.2s; }
 .flash:empty { display: none; }
+.flash.ok  { color: var(--success); }
+.flash.err { color: var(--error); }
+.saved-hint { font-size: 12px; align-self: center; color: var(--fg-dim); }
+.saved-hint.ok  { color: var(--success); }
+.saved-hint.err { color: var(--error); }
+
+/* ---- settings (monloader-style shell + sections) ---------------------- */
+
+.settings-shell { display: flex; align-items: stretch; background: var(--bg-surface); border: 1px solid var(--border); }
+.settings-rail { width: 180px; flex-shrink: 0; border-right: 1px solid var(--border); }
+.settings-nav { position: sticky; top: 42px; display: flex; flex-direction: column; gap: 2px; padding: 12px 0; }
+.settings-nav a {
+  color: var(--fg-dim);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  padding: 5px 16px;
+  border-left: 2px solid transparent;
+}
+.settings-nav a:hover { color: var(--fg); text-decoration: none; border-left-color: var(--accent); }
+.settings-content { flex: 1; min-width: 0; padding: 16px; }
+.settings-content > h1 { font-size: 18px; color: var(--fg); letter-spacing: 0.05em; margin-bottom: 14px; }
+
+.settings-section { margin-bottom: 16px; background: var(--bg-surface); border: 1px solid var(--border); padding: 16px; }
+.settings-section h2 {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 6px;
+}
+.section-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.settings-cols { display: flex; gap: 24px; flex-wrap: wrap; }
+.settings-cols > .field-group { flex: 1 1 240px; min-width: 0; }
+.settings-cols > .field-group input[type="text"],
+.settings-cols > .field-group input[type="number"],
+.settings-cols > .field-group select { width: 100%; max-width: none; }
+
+@media (max-width: 800px) {
+  .settings-shell { flex-direction: column; }
+  .settings-rail { width: auto; border-right: none; border-bottom: 1px solid var(--border); }
+  .settings-nav { position: static; flex-direction: row; flex-wrap: wrap; padding: 8px; }
+  .settings-nav a { border-left: none; border-bottom: 2px solid transparent; }
+  .settings-nav a:hover { border-left: none; border-bottom-color: var(--accent); }
+}
 
 /* ---- live feed --------------------------------------------------------- */
 
 .live table { table-layout: fixed; }
 .live td.tags { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---- login ------------------------------------------------------------ */
+
+.login-body { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+.login-card {
+  width: 340px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.login-brand {
+  font-size: 20px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+.login-form { display: flex; flex-direction: column; gap: 0.75rem; }
+.login-form input {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  padding: 0.5rem 0.6rem;
+}
+.login-form input:focus { outline: none; border-color: var(--accent); }
+.flash.err { color: var(--error); font-size: 12px; }
 
 @media (max-width: 700px) {
   .topbar { gap: 1rem; padding: 0 0.75rem; }

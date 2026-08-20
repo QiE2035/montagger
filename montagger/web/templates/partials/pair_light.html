@@ -1,5 +1,7 @@
 {% if pairing.paired() %}
 <span class="dot dot-ok"></span>paired
-{% else %}
+{% elif pairing.waiting() %}
 <span class="dot dot-warn"></span>pairing
+{% else %}
+<span class="dot dot-off"></span>unpaired
 {% endif %}

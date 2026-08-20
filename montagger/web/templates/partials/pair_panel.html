@@ -1,0 +1,28 @@
+{% if pairing.paired() %}
+<div id="pairing-panel">
+  <p class="field-hint">connected to monbooru. montagger can answer tag requests.
+    <form hx-post="/api/pair/remove" hx-target="#pairing-panel" hx-swap="outerHTML"
+          hx-confirm="remove the monbooru pairing?" data-confirm-ok="remove"
+          data-confirm-danger="the stored credentials are deleted" style="display:inline">
+      <button type="submit" class="btn btn-danger">remove pairing</button>
+    </form>
+  </p>
+  {% if pairing.state_message() %}<span class="hint">{{ pairing.state_message() }}</span>{% endif %}
+</div>
+{% elif pairing.waiting() %}
+<div id="pairing-panel" hx-post="/api/pair/poll" hx-trigger="every 2s" hx-swap="outerHTML">
+  <p class="field-hint">waiting for approval in monbooru... approve the request there (Settings &gt; Plugins) to complete the pairing.
+    <form hx-post="/api/pair/cancel" hx-target="#pairing-panel" hx-swap="outerHTML" style="display:inline">
+      <button type="submit" class="btn">cancel</button>
+    </form>
+  </p>
+</div>
+{% else %}
+<div id="pairing-panel">
+  <p class="field-hint">To pair with monbooru: click connect, then approve the request in monbooru's plugin settings.</p>
+  <form hx-post="/api/pair/connect" hx-target="#pairing-panel" hx-swap="outerHTML" style="display:inline">
+    <button type="submit" class="btn btn-primary">connect to monbooru</button>
+  </form>
+  {% if pairing.state_message() %}<span class="hint">{{ pairing.state_message() }}</span>{% endif %}
+</div>
+{% endif %}
