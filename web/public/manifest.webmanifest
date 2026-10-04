@@ -1,0 +1,13 @@
+{
+  "name": "montagger",
+  "short_name": "montagger",
+  "description": "把手机上的图片推送到 PC，用本地 ONNX 模型 AI 打标",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#16161c",
+  "theme_color": "#16161c",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

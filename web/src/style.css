@@ -1,0 +1,60 @@
+@import "tailwindcss";
+
+/* montagger dark-first palette; light mode flips via the .light class on
+   <html> and Naive UI's own theme. */
+:root {
+  --mt-bg: #101014;
+  --mt-bg-soft: #16161c;
+  --mt-card: #1c1c24;
+  --mt-border: #2a2a35;
+  --mt-text: #e2e2e8;
+  --mt-text-dim: #8888a0;
+  --mt-primary: #6366f1;
+}
+
+html.light {
+  --mt-bg: #f4f4f8;
+  --mt-bg-soft: #ffffff;
+  --mt-card: #ffffff;
+  --mt-border: #e3e3ec;
+  --mt-text: #1c1c24;
+  --mt-text-dim: #6b6b80;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--mt-bg);
+  color: var(--mt-text);
+  font-family:
+    "Inter",
+    -apple-system,
+    "PingFang SC",
+    "Noto Sans CJK SC",
+    "Microsoft YaHei",
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior-y: none;
+}
+
+/* Safe areas on notched phones, for the fixed bottom tab bar. */
+.safe-bottom {
+  padding-bottom: max(env(safe-area-inset-bottom), 0.5rem);
+}
+.safe-top {
+  padding-top: max(env(safe-area-inset-top), 0rem);
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--mt-border);
+  border-radius: 4px;
+}

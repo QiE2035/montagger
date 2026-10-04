@@ -1,0 +1,8 @@
+# monbooru plugin manifest: drop this folder into <configdir>/plugins/ and
+# start it from Settings > Plugins. The Python dependencies from
+# requirements.txt must be installed on the host first - monbooru provides
+# no runtime (see README.md).
+command = "./run.sh"
+args = []
+command_windows = "./run.cmd"
+args_windows = []

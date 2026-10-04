@@ -1,0 +1,28 @@
+# montagger runtime dependencies. Install into your system interpreter by
+# hand (`pip install -r requirements.txt`); montagger never manages
+# environments itself.
+#
+# GPU / accelerator note: only ONE onnxruntime distribution can be installed
+# at a time - they overwrite each other. Swap `onnxruntime` for the flavor
+# your machine needs and set `execution_provider` in montagger.toml to match:
+#
+#   onnxruntime            CPU everywhere (execution_provider = "cpu")
+#   onnxruntime-gpu        NVIDIA CUDA 12, Linux/Windows (execution_provider = "cuda")
+#   onnxruntime-directml   Windows, any DX12 GPU (execution_provider = "directml")
+#   onnxruntime-openvino   Intel CPU/GPU/NPU (execution_provider = "openvino")
+#
+# montagger refuses to start when the configured provider is not offered by
+# the installed build; it never falls back silently.
+
+fastapi
+uvicorn[standard]
+onnxruntime
+numpy
+pillow
+pillow-heif
+sqlalchemy
+httpx
+tomli-w
+
+# development / tests
+pytest

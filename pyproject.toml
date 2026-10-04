@@ -1,0 +1,22 @@
+[project]
+name = "montagger"
+version = "0.1.0"
+description = "Push photos from your phone to this PC and tag them with local ONNX models. A monbooru companion."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "monbooru" }]
+keywords = ["monbooru", "tagger", "onnxruntime", "wd14", "danbooru"]
+
+# Metadata only. The dependency list lives in requirements.txt and is
+# installed by hand into the system interpreter: montagger never creates a
+# virtualenv and pip-installs nothing on its own.
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/monbooru/montagger"
+Documentation = "https://monbooru.github.io/mondocs/addons/montagger/index.html"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
