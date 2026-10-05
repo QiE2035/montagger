@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, h, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
-import { Trash2, Copy, RefreshCw, XCircle, Search, ChevronLeft, ChevronRight } from "lucide-vue-next";
+import { Trash2, Copy, RefreshCw, XCircle, Search, ChevronLeft, ChevronRight, ImageOff } from "lucide-vue-next";
 import { NButton, NTag, useDialog, useMessage } from "naive-ui";
 import { api, connectEvents, type Job } from "../api";
 import TagChips from "../components/TagChips.vue";
@@ -113,6 +113,8 @@ function groupJobs(jobs: Job[]): Group[] {
   return order.map((k) => map.get(k)!);
 }
 
+// -- status vocabulary: color IS the status, words carry the detail -----------
+
 const statusLabel: Record<string, string> = {
   queued: "排队中",
   running: "推理中",
@@ -122,18 +124,64 @@ const statusLabel: Record<string, string> = {
   canceled: "已取消",
 };
 
-const STATUS_COLOR: Record<string, string> = {
-  queued: "default",
-  running: "info",
-  done: "success",
-  error: "error",
-  lost: "warning",
-  canceled: "default",
+const statusText: Record<string, string> = {
+  queued: "text-[var(--mt-primary)]",
+  running: "text-[var(--mt-primary)]",
+  done: "text-green-400",
+  error: "text-red-400",
+  lost: "text-[var(--mt-text-dim)]",
+  canceled: "text-[var(--mt-text-dim)]",
 };
 
-function copyTags(job: Job) {
-  const tags = (job.tags ?? []).map((t) => t.name).join(" ");
-  navigator.clipboard.writeText(tags).then(() => message.success("标签已复制"));
+// The group's worst state drives its dot: failures first, then whatever is
+// still moving, then the quiet terminal states.
+const WORST_ORDER = ["error", "running", "queued", "lost", "canceled", "done"];
+
+function worstStatus(group: Group): string {
+  for (const s of WORST_ORDER) if (group.jobs.some((j) => j.status === s)) return s;
+  return group.jobs[0]?.status ?? "done";
+}
+
+const dotColor: Record<string, string> = {
+  queued: "bg-[var(--mt-primary)]",
+  running: "bg-[var(--mt-primary)]",
+  done: "bg-green-400",
+  error: "bg-red-400",
+  lost: "bg-[var(--mt-text-dim)]",
+  canceled: "bg-[var(--mt-text-dim)]",
+};
+
+function humanSince(created?: string | number | null): string {
+  if (created == null) return "";
+  const ms = typeof created === "number" ? created * 1000 : new Date(`${created}Z`).getTime();
+  const s = (Date.now() - ms) / 1000;
+  if (!Number.isFinite(s) || s < 0) return "";
+  if (s < 60) return "刚刚";
+  if (s < 3600) return `${Math.floor(s / 60)} 分钟前`;
+  if (s < 86400) return `${Math.floor(s / 3600)} 小时前`;
+  return `${Math.floor(s / 86400)} 天前`;
+}
+
+function latestCreated(group: Group): string | number | undefined {
+  const stamps = group.jobs.map((j) => j.created_at).filter((c) => c != null) as (string | number)[];
+  if (!stamps.length) return undefined;
+  stamps.sort((a, b) => (String(a) < String(b) ? -1 : String(a) > String(b) ? 1 : 0));
+  return stamps[stamps.length - 1];
+}
+
+function groupDims(group: Group): string {
+  const done = group.jobs.find((j) => j.width);
+  return done?.width ? `${done.width}×${done.height}` : "";
+}
+
+// Previews come from montagger while the bytes are around, and from
+// monbooru's thumbnail (persisted monbooru_id) once they are not.
+function previewSrc(job: Job): string {
+  return job.monbooru_id ? `/api/v1/jobs/${job.id}/remote-preview` : `/api/v1/jobs/${job.id}/preview`;
+}
+
+function hideBrokenImg(e: Event) {
+  (e.target as HTMLImageElement).style.display = "none";
 }
 
 function toggleGroup(group: Group) {
@@ -154,12 +202,29 @@ function deselectAll() {
   selected.clear();
 }
 
-function remove(job: Job) {
-  api.deleteJob(job.id).then(refresh).catch((e) => message.error(e.message));
+function copyModelTags(job: Job) {
+  const tags = (job.tags ?? []).map((t) => t.name).join(" ");
+  navigator.clipboard.writeText(tags).then(() => message.success(`${job.model} 标签已复制`));
+}
+
+function copyGroupTags(group: Group) {
+  const text = group.jobs
+    .filter((j) => j.status === "done" && j.tags?.length)
+    .map((j) => `${j.model}: ${(j.tags ?? []).map((t) => t.name).join(" ")}`)
+    .join("\n");
+  if (!text) return;
+  navigator.clipboard.writeText(text).then(() => message.success("标签已复制"));
 }
 
 function cancel(job: Job) {
   api.cancelJob(job.id).then(refresh).catch((e) => message.error(e.message));
+}
+
+function removeGroup(group: Group) {
+  api.batchJobs({ action: "delete", ids: group.jobs.map((j) => j.id) }).then((r) => {
+    message.success(`已删除 ${r.affected} 条`);
+    refresh();
+  }).catch((e) => message.error(e.message));
 }
 
 function batchDeleteSelected() {
@@ -202,31 +267,31 @@ function preview(group: Group) {
     content: () =>
       h("div", { class: "flex flex-col gap-3" }, [
         h("img", {
-          src: `/api/v1/jobs/${group.jobs[0].id}/preview`,
+          src: previewSrc(group.jobs[0]),
           class: "max-h-[50vh] w-full rounded-xl object-contain",
-          onerror: (e: Event) => ((e.target as HTMLImageElement).style.display = "none"),
+          onerror: hideBrokenImg,
         }),
         ...group.jobs.map((job, i) =>
           h(
             "details",
             { key: job.id, open: i === 0, class: "rounded-xl bg-[var(--mt-bg-soft)] px-3 py-2" },
             [
-              h(
-                "summary",
-                { class: "flex cursor-pointer list-none items-center gap-2 text-xs [&::-webkit-details-marker]:hidden" },
-                [
-                  h("span", { class: "font-medium" }, job.model),
-                  h(
-                    "span",
-                    { class: "text-[var(--mt-text-dim)]" },
-                    `${statusLabel[job.status] ?? job.status} · ${job.width ?? "?"}×${job.height ?? "?"} · ${job.elapsed_ms ?? "?"}ms`,
-                  ),
-                ],
-              ),
+              h("summary", { class: "flex cursor-pointer select-none items-center gap-2 text-xs [&::marker]:text-[var(--mt-text-dim)]" }, [
+                h("span", { class: "font-medium" }, job.model),
+                h("span", { class: statusText[job.status] }, statusLabel[job.status] ?? job.status),
+                h("span", { class: "text-[var(--mt-text-dim)]" }, `${job.width ?? "?"}×${job.height ?? "?"} · ${job.elapsed_ms ?? "?"}ms`),
+                h("button", {
+                  class: "ml-auto rounded-md px-1.5 py-0.5 text-[11px] text-[var(--mt-text-dim)] hover:bg-[var(--mt-bg)] hover:text-[var(--mt-primary)]",
+                  title: "复制该模型标签",
+                  onClick: (e: Event) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    copyModelTags(job);
+                  },
+                }, "复制"),
+              ]),
               h("div", { class: "mt-2 flex flex-col gap-1.5" }, [
-                job.status === "error"
-                  ? h("div", { class: "text-xs text-red-400" }, job.error ?? "")
-                  : null,
+                job.status === "error" ? h("div", { class: "text-xs text-red-400" }, job.error ?? "") : null,
                 h(TagChips, { tags: job.tags ?? [] }),
               ]),
             ],
@@ -277,7 +342,7 @@ function preview(group: Group) {
       <span class="px-1">已选 {{ selected.size }} 项</span>
       <n-button size="tiny" secondary type="error" @click="batchDeleteSelected">删除所选</n-button>
       <n-button size="tiny" secondary @click="batchCancelSelected">取消所选</n-button>
-      <n-button size="tiny" quaternary class="ml-auto" @click="selected.clear()">取消选择</n-button>
+      <n-button size="tiny" quaternary class="ml-auto" @click="deselectAll">取消选择</n-button>
     </div>
 
     <!-- Active -->
@@ -285,7 +350,7 @@ function preview(group: Group) {
       <div
         v-for="group in activeGroups"
         :key="group.key"
-        class="flex flex-wrap items-center gap-2 rounded-2xl border border-[var(--mt-border)] bg-[var(--mt-card)] p-3"
+        class="group flex items-center gap-3 rounded-xl border border-[var(--mt-border)] bg-[var(--mt-card)] p-2.5"
       >
         <input
           type="checkbox"
@@ -293,66 +358,103 @@ function preview(group: Group) {
           :checked="group.jobs.every((j) => selected.has(j.id))"
           @click.stop="toggleGroup(group)"
         />
-        <RefreshCw :size="18" class="animate-spin text-[var(--mt-primary)]" />
-        <span class="truncate text-sm">{{ group.name }}</span>
-        <template v-for="job in group.jobs" :key="job.id">
-          <n-tag size="small" round>{{ job.status === "running" ? "推理中" : "排队中" }}</n-tag>
-          <n-tag size="small" round secondary>{{ job.model }}</n-tag>
-          <n-button v-if="job.status === 'queued'" size="tiny" quaternary type="error" @click.stop="cancel(job)">
+        <div class="relative h-14 w-14 shrink-0 overflow-hidden rounded-lg bg-[var(--mt-bg-soft)]">
+          <RefreshCw :size="18" class="absolute inset-0 m-auto animate-spin text-[var(--mt-primary)]" />
+        </div>
+        <div class="min-w-0 flex-1">
+          <div class="flex items-center gap-2">
+            <span class="truncate text-sm" :title="group.name">{{ group.name }}</span>
+            <NTag v-if="group.jobs.length > 1" size="small" round secondary class="shrink-0">
+              {{ group.jobs.length }} 模型
+            </NTag>
+          </div>
+          <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs">
+            <span
+              v-for="job in group.jobs"
+              :key="job.id"
+              :class="statusText[job.status]"
+              :title="`${job.model} · ${statusLabel[job.status] ?? job.status}`"
+            >{{ job.model }} {{ statusLabel[job.status] ?? job.status }}</span>
+          </div>
+        </div>
+        <div class="flex shrink-0 gap-1">
+          <n-button
+            v-for="job in group.jobs.filter((j) => j.status === 'queued')"
+            :key="job.id"
+            size="tiny"
+            quaternary
+            type="error"
+            :title="`取消 ${job.model}`"
+            @click.stop="cancel(job)"
+          >
             <template #icon><XCircle :size="13" /></template>
           </n-button>
-        </template>
+        </div>
       </div>
     </div>
 
-    <!-- History, grouped per file -->
-    <div class="grid grid-cols-1 gap-3 lg:grid-cols-2">
+    <!-- History, one compact row per image -->
+    <div class="grid grid-cols-1 gap-2 lg:grid-cols-2">
       <div
         v-for="group in historyGroups"
         :key="group.key"
-        class="flex cursor-pointer flex-col gap-2 rounded-2xl border border-[var(--mt-border)] bg-[var(--mt-card)] p-3"
+        class="group flex cursor-pointer items-center gap-3 rounded-xl border border-[var(--mt-border)] bg-[var(--mt-card)] p-2.5"
         @click="preview(group)"
       >
-        <div class="flex items-center gap-2">
-          <input
-            type="checkbox"
-            class="accent-[var(--mt-primary)]"
-            :checked="group.jobs.every((j) => selected.has(j.id))"
-            @click.stop="toggleGroup(group)"
+        <input
+          type="checkbox"
+          class="accent-[var(--mt-primary)]"
+          :checked="group.jobs.every((j) => selected.has(j.id))"
+          @click.stop="toggleGroup(group)"
+        />
+        <div class="relative h-14 w-14 shrink-0 overflow-hidden rounded-lg bg-[var(--mt-bg-soft)]">
+          <ImageOff :size="16" class="absolute inset-0 m-auto text-[var(--mt-text-dim)]" />
+          <img
+            :src="previewSrc(group.jobs[0])"
+            class="relative h-full w-full object-cover"
+            loading="lazy"
+            @error="hideBrokenImg"
           />
-          <span class="truncate text-sm font-medium">{{ group.name }}</span>
-          <n-tag
-            v-if="group.jobs.length > 1"
-            size="small"
-            round
-            secondary
-            class="ml-auto shrink-0"
-          >{{ group.jobs.length }} 个模型</n-tag>
         </div>
-        <div
-          v-for="job in group.jobs"
-          :key="job.id"
-          class="flex flex-col gap-1.5 border-t border-[var(--mt-border)] pt-1.5 first:border-t-0 first:pt-0"
-        >
+        <div class="min-w-0 flex-1">
           <div class="flex items-center gap-2">
-            <n-tag size="small" round :type="(STATUS_COLOR[job.status] as any)" class="shrink-0">
-              {{ statusLabel[job.status] ?? job.status }}
-            </n-tag>
-            <n-tag size="small" round secondary class="shrink-0">{{ job.model }}</n-tag>
-            <div class="ml-auto flex gap-1" @click.stop>
-              <n-button v-if="job.status === 'done'" size="tiny" quaternary @click="copyTags(job)">
-                <template #icon><Copy :size="14" /></template>
-              </n-button>
-              <n-button size="tiny" quaternary type="error" @click="remove(job)">
-                <template #icon><Trash2 :size="14" /></template>
-              </n-button>
-            </div>
+            <span class="flex min-w-0 items-center gap-1.5 text-sm" :title="group.name">
+              <span class="h-2 w-2 shrink-0 rounded-full" :class="dotColor[worstStatus(group)]" />
+              <span class="truncate">{{ group.name }}</span>
+            </span>
+            <NTag v-if="group.jobs.length > 1" size="small" round secondary class="shrink-0">
+              {{ group.jobs.length }} 模型
+            </NTag>
           </div>
-          <div v-if="job.status === 'error'" class="truncate text-xs text-red-400">{{ job.error }}</div>
-          <div v-if="job.status === 'done'" class="flex items-center gap-2 text-xs text-[var(--mt-text-dim)]">
-            {{ job.width }}×{{ job.height }} · {{ job.elapsed_ms }}ms · {{ job.provider }}
+          <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs">
+            <span
+              v-for="job in group.jobs"
+              :key="job.id"
+              class="truncate"
+              :class="statusText[job.status]"
+              :title="`${job.model} · ${statusLabel[job.status] ?? job.status}`"
+            >{{ job.model }} {{ statusLabel[job.status] ?? job.status }}</span>
           </div>
-          <TagChips v-if="job.status === 'done'" :tags="job.tags ?? []" :max="12" />
+          <div
+            class="mt-0.5 truncate text-[11px] text-[var(--mt-text-dim)]"
+            :title="groupDims(group)"
+          >
+            {{ humanSince(latestCreated(group)) }}<template v-if="groupDims(group)"> · {{ groupDims(group) }}</template>
+          </div>
+        </div>
+        <div class="hidden shrink-0 gap-1 group-hover:flex" @click.stop>
+          <n-button
+            v-if="group.jobs.some((j) => j.status === 'done')"
+            size="tiny"
+            quaternary
+            title="复制标签"
+            @click.stop="copyGroupTags(group)"
+          >
+            <template #icon><Copy :size="13" /></template>
+          </n-button>
+          <n-button size="tiny" quaternary type="error" title="删除该图的所有任务" @click.stop="removeGroup(group)">
+            <template #icon><Trash2 :size="13" /></template>
+          </n-button>
         </div>
       </div>
     </div>
