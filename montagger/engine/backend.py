@@ -26,21 +26,6 @@ from .session import (
 
 log = logx.get("engine")
 
-# Accelerator/host memory exhaustion, as ORT words it across providers. A
-# batch can walk the GPU into this when several models stay resident; it is
-# recoverable by releasing everything and retrying once.
-_OOM_MARKERS = (
-    "failed to allocate memory",  # BFCArena device/host arena
-    "out of memory",  # CUDA OOM and friends
-    "cuda_error_out_of_memory",
-    "std::bad_alloc",  # host heap
-)
-
-
-def _is_oom(err: Exception) -> bool:
-    text = str(err).lower()
-    return any(marker in text for marker in _OOM_MARKERS)
-
 
 @dataclass
 class ModelStatus:
@@ -273,30 +258,6 @@ class Engine:
         if reason:
             raise EngineError(f"model {name}: {reason}")
 
-        try:
-            return self._tag_with(cfg, data, name)
-        except Exception as err:
-            if not _is_oom(err):
-                raise
-        # The accelerator ran out mid-run. ORT never returns device memory
-        # while a process lives, so drop every session - the isolated worker
-        # dies with them, handing all of it back in one shot - and retry
-        # once on a fresh one; the other configured models reload on demand.
-        log.warning(
-            "model %s: accelerator out of memory; releasing every session and retrying once", name
-        )
-        self._sessions.invalidate(None)
-        try:
-            return self._tag_with(cfg, data, name)
-        except Exception as err:
-            if not _is_oom(err):
-                raise
-            raise EngineError(
-                f"model {name}: accelerator still out of memory after releasing every session "
-                "(close other GPU applications, or tag with fewer models at once)"
-            ) from err
-
-    def _tag_with(self, cfg, data: bytes, name: str) -> TagResult:
         runtime: ModelRuntime = self._sessions.get(self.model_root / name, name)
         started = time.perf_counter()
         scores, width, height = runtime.infer(data)
