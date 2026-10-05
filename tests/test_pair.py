@@ -6,6 +6,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
+from pydantic import ValidationError
 
 from montagger.config import Provider
 from montagger.engine.scoring import ScoredTag
@@ -105,5 +106,6 @@ def test_wire_tags_from_rows_and_resolve_models(tmp_path):
     assert resolve_models(cfg) == ["wd-swinv2"]  # default fallback
     cfg.models.default_models = ["wd-swinv2", "joytag"]
     assert resolve_models(cfg) == ["wd-swinv2", "joytag"]
-    cfg.models.default_models = [" ", "a", "a"]
-    assert resolve_models(cfg) == ["a"]  # blanks dropped, dupes collapsed
+    # blanks and duplicates are rejected at the model boundary now
+    with pytest.raises(ValidationError):
+        cfg.models.default_models = [" ", "a", "a"]

@@ -81,10 +81,10 @@ class StubEngine:
     def thresholds(self, name):
         # Mirror Engine.thresholds' merge (stub has no catalog entry).
         ov = self._cfg.current().threshold_overrides(name)
-        g = ov["global"] if ov["global"] is not None else 0.35
+        g = ov.global_ if ov.global_ is not None else 0.35
         cats = {"character": 0.5}
-        cats.update(ov["categories"])
-        return g, cats, dict(ov["top_k"]), list(ov["disabled"])
+        cats.update(ov.categories)
+        return g, cats, dict(ov.top_k), list(ov.disabled)
 
     def tag_bytes(self, data, model=None):
         name = model or "stub"
@@ -307,6 +307,17 @@ def test_settings_validation(client):
 def test_relay_requires_peer_secret(client):
     resp = client.post("/api/v1/relay/tag", json={"image_ids": [1]})
     assert resp.status_code == 401
+
+
+def test_settings_threshold_without_global(client):
+    # regression: an override without "global" hit tomli_w's null wall on save
+    resp = client.post(
+        "/api/v1/settings",
+        json={"thresholds": {"stub": {"categories": {"character": 0.6}}}},
+    )
+    assert resp.status_code == 200
+    eff = client.get("/api/v1/models").json()["models"][0]["effective"]
+    assert eff["categories"] == {"character": 0.6}
 
 
 def test_unknown_model_rejected(client):

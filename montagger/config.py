@@ -12,10 +12,11 @@ import os
 import secrets
 import threading
 import tomllib
-from dataclasses import dataclass, field, fields
 from pathlib import Path
+from typing import Annotated
 
 import tomli_w
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from . import logx
 
@@ -42,66 +43,81 @@ PROVIDER_NAMES = {
     "xnnpack": "XnnpackExecutionProvider",
 }
 
+# pydantic constraint aliases keep the threshold tables declarative.
+ThresholdValue = Annotated[float, Field(gt=0, lt=1)]
+TopKValue = Annotated[int, Field(gt=0, le=100)]
+CategoryName = Annotated[str, Field(min_length=1)]
 
-@dataclass
-class ServerConfig:
+
+class _Section(BaseModel):
+    """Unknown keys are ignored: an older config never breaks a newer build.
+    Assignment is revalidated so a saving mutator cannot park a bad value."""
+
+    model_config = ConfigDict(extra="ignore", validate_assignment=True)
+
+
+class ServerConfig(_Section):
     bind_address: str = "0.0.0.0:8457"
     base_url: str = ""
 
 
-@dataclass
-class AuthConfig:
+class AuthConfig(_Section):
     # Empty disables the login screen; montagger is a LAN tool.
     password: str = ""
     session_days: int = 30
 
 
-@dataclass
-class ModelsConfig:
+class ModelsConfig(_Section):
     # Empty resolves to <repo>/models. May point at monbooru's
     # paths.model_path to share downloaded models with it.
     path: str = ""
     default: str = "wd-swinv2"
     # Models every upload tags with, in order; empty falls back to
     # [default]. The UI can override per upload.
-    default_models: list[str] = field(default_factory=list)
+    default_models: list[str] = Field(default_factory=list)
     # Explicit, never auto: the provider montagger must configure, matched
     # against the installed onnxruntime build at startup. A value the build
     # does not offer is a hard error, not a fallback.
-    execution_provider: str = "cpu"
+    execution_provider: str = Field("cpu", min_length=1)
     device_id: int = 0
     # 0 leaves the onnxruntime default threading in place.
     intra_op_threads: int = 0
-    max_upload_mb: int = 100
+    max_upload_mb: int = Field(100, gt=0, le=4096)
     # Minutes a loaded model sits unused before its session is dropped
     # (RAM/VRAM back to the system). 0 keeps models loaded forever.
-    idle_unload_min: int = 0
+    idle_unload_min: int = Field(0, ge=0, le=1440)
     # Run all ONNX sessions in a child process. ORT never returns the CUDA
     # context to the OS within a process, so this is the only way
     # 立即释放内存 can actually shrink RSS. Turn off only to shave the
     # ~1s worker startup per respawn; requires a restart when changed.
     isolated: bool = True
     # Categories the tagger never emits (e.g. ["meta"]).
-    disabled_categories: list[str] = field(default_factory=list)
+    disabled_categories: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _no_blank_or_duplicate_models(self) -> "ModelsConfig":
+        seen = set()
+        for name in self.default_models:
+            if not name.strip() or name.strip() in seen:
+                raise ValueError(f"default_models holds a blank or duplicate entry: {name!r}")
+            seen.add(name.strip())
+        return self
 
 
-@dataclass
-class QueueConfig:
+class QueueConfig(_Section):
     # 0 = unbounded: relay pushes of an unknown count never bounce.
-    max_pending: int = 32
+    max_pending: int = Field(32, ge=0, le=1024)
     history_days: int = 7
 
 
-@dataclass
-class HFConfig:
+class HFConfig(_Section):
     # For gated repos (animetimm-eva02). HF_TOKEN / HUGGING_FACE_HUB_TOKEN
     # win over the file value.
     token: str = ""
     endpoint: str = DEFAULT_HF_ENDPOINT
 
 
-@dataclass
-class MonbooruConfig:
+class MonbooruConfig(_Section):
     api_url: str = ""
     web_url: str = ""
     token: str = ""
@@ -114,9 +130,21 @@ class MonbooruConfig:
     gallery: str = ""
 
 
-@dataclass
-class LogConfig:
+class LogConfig(_Section):
     debug: bool = False
+
+
+class ThresholdOverride(_Section):
+    """Per-model threshold overrides, nested form:
+    {global, categories:{cat:thr}, top_k:{cat:n}, disabled:[cat]}."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    # TOML has no null: unset means "keep the catalog default".
+    global_: ThresholdValue | None = Field(default=None, alias="global")
+    categories: dict[str, ThresholdValue] = Field(default_factory=dict)
+    top_k: dict[str, TopKValue] = Field(default_factory=dict)
+    disabled: list[CategoryName] = Field(default_factory=list)
 
 
 def normalize_thresholds(raw: dict) -> dict:
@@ -124,10 +152,14 @@ def normalize_thresholds(raw: dict) -> dict:
     {model: {global, categories:{cat:thr}, top_k:{cat:n}, disabled:[cat]}}.
 
     The historical flat form {model: {global, <category>: thr}} upgrades
-    silently: any non-reserved key is a category threshold.
+    silently: any non-reserved key is a category threshold. Entries already
+    normalized to ThresholdOverride pass through untouched.
     """
     out: dict = {}
     for model, over in (raw or {}).items():
+        if isinstance(over, ThresholdOverride):
+            out[str(model)] = over
+            continue
         if not isinstance(over, dict):
             continue
         entry: dict = {"global": over.get("global"), "categories": {}, "top_k": {}, "disabled": []}
@@ -148,20 +180,49 @@ def normalize_thresholds(raw: dict) -> dict:
     return out
 
 
-@dataclass
-class Config:
+_SECTIONS = ("server", "auth", "models", "queue", "hf", "monbooru", "log")
+
+
+class Config(_Section):
     setup_done: bool = False
-    server: ServerConfig = field(default_factory=ServerConfig)
-    auth: AuthConfig = field(default_factory=AuthConfig)
-    models: ModelsConfig = field(default_factory=ModelsConfig)
-    queue: QueueConfig = field(default_factory=QueueConfig)
-    hf: HFConfig = field(default_factory=HFConfig)
-    monbooru: MonbooruConfig = field(default_factory=MonbooruConfig)
-    log: LogConfig = field(default_factory=LogConfig)
+    server: ServerConfig = Field(default_factory=ServerConfig)
+    auth: AuthConfig = Field(default_factory=AuthConfig)
+    models: ModelsConfig = Field(default_factory=ModelsConfig)
+    queue: QueueConfig = Field(default_factory=QueueConfig)
+    hf: HFConfig = Field(default_factory=HFConfig)
+    monbooru: MonbooruConfig = Field(default_factory=MonbooruConfig)
+    log: LogConfig = Field(default_factory=LogConfig)
     # Per-model threshold overrides: {"wd-swinv2": {"global": 0.35,
     # "character": 0.5}}. "global" renames the catalog default; a category
     # name overrides just that category.
-    thresholds: dict = field(default_factory=dict)
+    thresholds: dict[str, ThresholdOverride] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_malformed_sections(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        cleaned = {}
+        for key, value in data.items():
+            # Values are plain dicts when validating parsed TOML, but model
+            # instances when validate_assignment re-runs this on a live
+            # config - both are well-formed, anything else is dropped.
+            if (key in _SECTIONS or key == "thresholds") and not isinstance(
+                value, (dict, BaseModel)
+            ):
+                continue
+            cleaned[key] = value
+        return cleaned
+
+    @field_validator("setup_done", mode="before")
+    @classmethod
+    def _coerce_bool(cls, value: object) -> object:
+        return bool(value)
+
+    @field_validator("thresholds", mode="before")
+    @classmethod
+    def _normalize_thresholds(cls, value: object) -> object:
+        return normalize_thresholds(value)  # upgrades the historical flat form
 
     def model_dir(self, repo_root: Path) -> Path:
         if self.models.path.strip():
@@ -179,79 +240,9 @@ class Config:
         env = os.environ.get("HF_ENDPOINT")
         return (env or self.hf.endpoint or DEFAULT_HF_ENDPOINT).rstrip("/")
 
-    def threshold_overrides(self, model: str) -> dict:
-        """Normalized per-model overrides: {global, categories, top_k,
-        disabled} with every key present."""
-        raw = self.thresholds.get(model)
-        if not isinstance(raw, dict):
-            return {"global": None, "categories": {}, "top_k": {}, "disabled": []}
-        return normalize_thresholds({model: raw})[model]
-
-    def validate(self) -> None:
-        if not self.models.execution_provider:
-            raise ValueError("models.execution_provider must not be empty (explicit choice, no auto)")
-        if not (0 < self.models.max_upload_mb <= 4096):
-            raise ValueError("models.max_upload_mb must be within 1..4096")
-        if not (0 <= self.queue.max_pending <= 1024):
-            raise ValueError("queue.max_pending must be 0 (unbounded) or within 1..1024")
-        if not (0 <= self.models.idle_unload_min <= 24 * 60):
-            raise ValueError("models.idle_unload_min must be within 0..1440")
-        if not isinstance(self.monbooru.push_tags, bool) or not isinstance(
-            self.monbooru.push_images, bool
-        ):
-            raise ValueError("monbooru.push_tags / push_images must be booleans")
-        seen = set()
-        for name in self.models.default_models:
-            name = str(name).strip()
-            if not name or name in seen:
-                raise ValueError(f"models.default_models holds a blank or duplicate entry: {name!r}")
-            seen.add(name)
-        for model, over in self.thresholds.items():
-            if not isinstance(over, dict):
-                raise ValueError(f"thresholds.{model} must be a table")
-            g = over.get("global")
-            if g is not None and not (isinstance(g, (int, float)) and 0.0 < float(g) < 1.0):
-                raise ValueError(f"thresholds.{model}.global must be within (0,1)")
-            cats = over.get("categories") or {}
-            if not isinstance(cats, dict):
-                raise ValueError(f"thresholds.{model}.categories must be a table")
-            for cat, value in cats.items():
-                if not isinstance(value, (int, float)) or not (0.0 < float(value) < 1.0):
-                    raise ValueError(f"thresholds.{model}.categories.{cat} must be within (0,1)")
-            top_k = over.get("top_k") or {}
-            if not isinstance(top_k, dict):
-                raise ValueError(f"thresholds.{model}.top_k must be a table")
-            for cat, value in top_k.items():
-                if not isinstance(value, int) or not (0 < value <= 100):
-                    raise ValueError(f"thresholds.{model}.top_k.{cat} must be an int within 1..100")
-            disabled = over.get("disabled") or []
-            if not isinstance(disabled, list) or not all(isinstance(c, str) and c for c in disabled):
-                raise ValueError(f"thresholds.{model}.disabled must be a list of category names")
-
-
-_SECTIONS = {
-    "server": ServerConfig,
-    "auth": AuthConfig,
-    "models": ModelsConfig,
-    "queue": QueueConfig,
-    "hf": HFConfig,
-    "monbooru": MonbooruConfig,
-    "log": LogConfig,
-}
-
-
-def _apply(config: Config, data: dict) -> None:
-    for key, value in data.items():
-        if key in _SECTIONS and isinstance(value, dict):
-            section = getattr(config, key)
-            for f in fields(section):
-                if f.name in value and value[f.name] is not None:
-                    setattr(section, f.name, value[f.name])
-        elif key == "thresholds" and isinstance(value, dict):
-            config.thresholds = normalize_thresholds(value)
-        elif key == "setup_done":
-            config.setup_done = bool(value)
-        # Unknown keys are ignored: an older config never breaks a newer build.
+    def threshold_overrides(self, model: str) -> ThresholdOverride:
+        """Normalized per-model overrides with every key present."""
+        return self.thresholds.get(model) or ThresholdOverride()
 
 
 def generate_secret() -> str:
@@ -274,9 +265,7 @@ class Provider:
                 data = tomllib.loads(self.path.read_text(encoding="utf-8"))
             except (tomllib.TOMLDecodeError, OSError) as err:
                 log.warning("config %s unreadable (%s); using defaults", self.path, err)
-        config = Config()
-        _apply(config, data)
-        config.validate()
+        config = Config.model_validate(data)
         with self._lock:
             self._config = config
         return config
@@ -290,22 +279,20 @@ class Provider:
         then swapped in. A raising mutator leaves everything untouched."""
         with self._lock:
             snapshot = self._config
-        import copy
-
-        candidate = copy.deepcopy(snapshot)
+        candidate = snapshot.model_copy(deep=True)
         mutate(candidate)
-        candidate.validate()
+        # Assignment validation catches scalar edits already; this final pass
+        # also re-validates in-place edits (dict/list mutation escapes it).
+        candidate = Config.model_validate(candidate.model_dump(by_alias=True))
         self._write(candidate)
         with self._lock:
             self._config = candidate
         return candidate
 
     def _write(self, config: Config) -> None:
-        doc: dict = {"setup_done": config.setup_done}
-        for name, cls in _SECTIONS.items():
-            section = getattr(config, name)
-            doc[name] = {f.name: getattr(section, f.name) for f in fields(cls)}
-        doc["thresholds"] = config.thresholds
+        # exclude_none: TOML has no null, an unset "global" is simply absent
+        # and reads back as None (keep the catalog default).
+        doc = config.model_dump(by_alias=True, exclude_none=True)
         text = tomli_w.dumps(doc)
         tmp = self.path.with_suffix(".toml.part")
         tmp.write_text(text, encoding="utf-8")

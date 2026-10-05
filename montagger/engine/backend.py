@@ -240,15 +240,15 @@ class Engine:
         overrides = cfg.threshold_overrides(name)
         entry = find_entry(load_catalog(self.model_root), name)
         global_threshold = float(
-            overrides["global"]
-            if overrides["global"] is not None
+            overrides.global_
+            if overrides.global_ is not None
             else (entry.default_threshold if entry else 0.35)
         )
         category_thresholds = dict(entry.default_thresholds) if entry else {}
-        category_thresholds.update({k: float(v) for k, v in overrides["categories"].items()})
+        category_thresholds.update({k: float(v) for k, v in overrides.categories.items()})
         top_k = dict(entry.default_top_k) if entry else {}
-        top_k.update({k: int(v) for k, v in overrides["top_k"].items()})
-        disabled = list(overrides["disabled"])
+        top_k.update({k: int(v) for k, v in overrides.top_k.items()})
+        disabled = list(overrides.disabled)
         return global_threshold, category_thresholds, top_k, disabled
 
     def tag_bytes(self, data: bytes, model: str | None = None) -> TagResult:
