@@ -600,6 +600,28 @@ const categoryOptions = Object.entries(categoryZh).map(([value, label]) => ({ la
                 @update:value="(v: number | null) => save({ queue: { history_days: v ?? 7 } })"
               />
             </label>
+            <label class="flex flex-col gap-1 text-xs text-[var(--mt-text-dim)]">
+              预览保留条数（重启后生效）
+              <NInputNumber
+                :value="settings.queue.keep_recent"
+                size="small"
+                :min="0"
+                :max="1024"
+                style="width: 130px"
+                @update:value="(v: number | null) => save({ queue: { keep_recent: v ?? 8 } })"
+              />
+            </label>
+            <label class="flex flex-col gap-1 text-xs text-[var(--mt-text-dim)]">
+              内存保留任务对象（0 = 不限，重启后生效）
+              <NInputNumber
+                :value="settings.queue.max_job_objects"
+                size="small"
+                :min="0"
+                :max="200000"
+                style="width: 140px"
+                @update:value="(v: number | null) => save({ queue: { max_job_objects: v ?? 500 } })"
+              />
+            </label>
             <NButton size="small" @click="purgeHistory">
               <template #icon><Trash2 :size="14" /></template>
               立即清理过期历史

@@ -117,6 +117,11 @@ class QueueConfig(_Section):
     # 0 = unbounded: relay pushes of an unknown count never bounce.
     max_pending: int = Field(32, ge=0, le=1024)
     history_days: int = 7
+    # Finished-job RAM hygiene: preview bytes kept for the newest
+    # `keep_recent` done jobs (0 = none), and at most `max_job_objects`
+    # finished Job objects held in RAM (0 = unlimited). Read at startup.
+    keep_recent: int = Field(8, ge=0, le=1024)
+    max_job_objects: int = Field(500, ge=0, le=200000)
 
 
 class HFConfig(_Section):

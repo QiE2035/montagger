@@ -245,22 +245,26 @@ class Store:
         image. Under search a group keeps only its matching jobs."""
         def fn(session: Session):
             needle = f"%{search.strip()}%" if search else None
-            images = select(JobRow.sha256, func.max(JobRow.created_at).label("last"))
+            grouped = (
+                select(JobRow.sha256, func.max(JobRow.created_at).label("last"))
+                .group_by(JobRow.sha256)
+            )
             if needle is not None:
-                images = images.where(
+                grouped = grouped.where(
                     JobRow.filename.ilike(needle)
                     | JobRow.model.ilike(needle)
                     | JobRow.tags_json.ilike(needle)
                 )
-            images = (
-                images.group_by(JobRow.sha256)
-                .order_by(desc("last"), JobRow.sha256)
+            total = session.execute(
+                select(func.count()).select_from(grouped.subquery())
+            ).scalar_one()
+            page = (
+                grouped.order_by(desc("last"), JobRow.sha256)
                 .limit(limit)
                 .offset(offset)
                 .subquery()
             )
-            total = session.execute(select(func.count()).select_from(images)).scalar_one()
-            shas = [row[0] for row in session.execute(select(images.c.sha256))]
+            shas = [row[0] for row in session.execute(select(page.c.sha256))]
             if not shas:
                 return [], int(total)
             condition = JobRow.sha256.in_(shas)

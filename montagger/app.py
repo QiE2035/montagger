@@ -99,6 +99,8 @@ class ModelsUpdate(BaseModel):
 class QueueUpdate(BaseModel):
     max_pending: int | None = None
     history_days: int | None = None
+    keep_recent: int | None = None
+    max_job_objects: int | None = None
 
 
 class HfUpdate(BaseModel):
@@ -705,6 +707,8 @@ def create_app(ctx: AppContext) -> FastAPI:
             "queue": {
                 "max_pending": cfg.queue.max_pending,
                 "history_days": cfg.queue.history_days,
+                "keep_recent": cfg.queue.keep_recent,
+                "max_job_objects": cfg.queue.max_job_objects,
             },
             "hf": {"endpoint": cfg.hf.endpoint, "has_token": bool(cfg.hf_token())},
             "monbooru": {

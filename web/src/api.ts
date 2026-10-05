@@ -91,7 +91,12 @@ export interface Settings {
     model_root: string;
     loaded: { name: string; idle_s: number | null }[];
   };
-  queue: { max_pending: number; history_days: number };
+  queue: {
+    max_pending: number;
+    history_days: number;
+    keep_recent: number;
+    max_job_objects: number;
+  };
   hf: { endpoint: string; has_token: boolean };
   monbooru: {
     api_url: string;

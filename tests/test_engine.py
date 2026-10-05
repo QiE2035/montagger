@@ -168,3 +168,18 @@ def test_drain_hook_fires_only_when_queue_runs_dry():
 
     # no drain while b's job is still queued; exactly one drain at the end
     assert asyncio.run(scenario()) == [3]
+
+
+def test_queue_memory_caps():
+    """keep_recent caps preview bytes, max_job_objects caps Job objects."""
+    runner = Runner(_FakeEngine(), _FakeStore(), 0, keep_recent=1, max_job_objects=2)
+    jobs = [make_job(i, "a") for i in range(4)]
+    for job in jobs:
+        job.status = store.DONE
+        runner._jobs[job.id] = job
+        runner._order.append(job.id)
+    runner._evict_bytes()
+    # only the newest done job keeps its preview bytes
+    assert [job.data == b"" for job in jobs] == [True, True, True, False]
+    # and only max_job_objects finished Job objects survive
+    assert set(runner._jobs) == {"job-2", "job-3"}

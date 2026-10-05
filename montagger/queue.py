@@ -71,20 +71,25 @@ class Job:
 class Runner:
     """Owns pending jobs, the worker task, and the SSE broadcast set."""
 
-    # Bytes of the most recent done jobs kept around for previews; older
-    # rows keep only their metadata.
-    KEEP_RECENT_BYTES = 8
-    # Finished Job objects (result tags included) kept in RAM; older ones
-    # drop to their SQLite history row. Big photo batches must not pile up
-    # Python objects forever.
-    MAX_JOB_OBJECTS = 500
-
-    def __init__(self, engine: Engine, store_: store.Store, max_pending: int):
+    def __init__(
+        self,
+        engine: Engine,
+        store_: store.Store,
+        max_pending: int,
+        *,
+        keep_recent: int = 8,
+        max_job_objects: int = 500,
+    ):
         self.engine = engine
         self.store = store_
-        # 0 means unbounded: a monbooru relay push of unknown size never
+        # 0 means unbounded: a monbooru relay push of an unknown count never
         # bounces for capacity.
         self.max_pending = max_pending
+        # Finished-job RAM hygiene: preview bytes for the newest
+        # `keep_recent` done jobs (0 = none) and at most `max_job_objects`
+        # finished Job objects (0 = unlimited).
+        self.keep_recent = keep_recent
+        self.max_job_objects = max_job_objects
         # Optional post-done hook (monbooru auto-push); set by the app layer.
         self.on_done = None
         # Optional drain hook: awaited when the queue runs completely dry
@@ -281,12 +286,14 @@ class Runner:
         """Keep bytes only for live jobs and the newest few done ones, then
         cap the finished-Job object count (results stay in SQLite)."""
         done_with_bytes = [jid for jid in self._order if (j := self._jobs.get(jid)) and j.status == store.DONE]
-        for jid in done_with_bytes[: -self.KEEP_RECENT_BYTES]:
+        evict = done_with_bytes if self.keep_recent <= 0 else done_with_bytes[:-self.keep_recent]
+        for jid in evict:
             if job := self._jobs.get(jid):
                 job.data = b""
-        finished = [jid for jid in self._order if (j := self._jobs.get(jid)) and j.status in store._TERMINAL]
-        for jid in finished[: -self.MAX_JOB_OBJECTS]:
-            self._forget(jid)
+        if self.max_job_objects > 0:
+            finished = [jid for jid in self._order if (j := self._jobs.get(jid)) and j.status in store._TERMINAL]
+            for jid in finished[:-self.max_job_objects]:
+                self._forget(jid)
 
     def trim_memory(self) -> dict:
         """Manual release: forget finished Job objects entirely and drop

@@ -113,3 +113,32 @@ def test_tokens(db):
     assert db.delete_token(rows[0].id)
     assert not db.token_known(token)
     assert not db.has_tokens()
+
+
+def test_list_job_groups_keeps_images_whole(db):
+    """Grouped paging is a window over images: every job of the page's
+    images comes back together, whatever the page size."""
+    for i, sha in enumerate(("a" * 64, "b" * 64, "c" * 64)):
+        for j, model in enumerate(("wd-swinv2", "joytag")):
+            mk(db, job_id=f"j{i}{j}", sha=sha, model=model, filename=f"img{i}.jpg")
+    rows, total = db.list_job_groups(limit=2, offset=0)
+    assert total == 3  # images, not jobs
+    assert len(rows) == 4  # two whole images' worth of jobs
+    shas = {r.sha256 for r in rows}
+    assert len(shas) == 2  # no image split across the boundary
+    # newest image first, upload model order within an image
+    assert rows[0].sha256 == "c" * 64
+    assert [r.model for r in rows if r.sha256 == "c" * 64] == ["wd-swinv2", "joytag"]
+
+    rows2, total2 = db.list_job_groups(limit=2, offset=2)
+    assert total2 == 3 and len(rows2) == 2
+    assert {r.sha256 for r in rows2} == {"a" * 64}
+
+
+def test_list_job_groups_search_scopes_to_matching_jobs(db):
+    mk(db, job_id="j1", sha="a" * 64, model="wd-swinv2")
+    mk(db, job_id="j2", sha="a" * 64, model="joytag")
+    mk(db, job_id="j3", sha="b" * 64, model="joytag")
+    rows, total = db.list_job_groups(limit=10, offset=0, search="joytag")
+    assert total == 2  # two images have a joytag job
+    assert {r.id for r in rows} == {"j2", "j3"}  # only the matching jobs

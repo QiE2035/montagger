@@ -61,7 +61,14 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     store_ = Store(repo_root() / "montagger.sqlite")
-    runner = Runner(engine, store_, cfg.current().queue.max_pending)
+    queue_cfg = cfg.current().queue
+    runner = Runner(
+        engine,
+        store_,
+        queue_cfg.max_pending,
+        keep_recent=queue_cfg.keep_recent,
+        max_job_objects=queue_cfg.max_job_objects,
+    )
 
     # The pairing card and relay endpoints are part of the app; the offer
     # loop stays idle until a monbooru api_url is configured.
