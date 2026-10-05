@@ -22,6 +22,7 @@ from sqlalchemy import (
     Text,
     create_engine,
     delete,
+    desc,
     event,
     func,
     insert,
@@ -227,6 +228,51 @@ class Store:
                     query.order_by(JobRow.created_at.desc()).limit(limit).offset(offset)
                 )
             )
+            return rows, int(total)
+        return self._run(fn)
+
+    def list_job_groups(
+        self,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        search: str | None = None,
+    ) -> tuple[list[JobRow], int]:
+        """(rows, total_images): the page is a window over IMAGES (sha256
+        groups), newest image first, and rows carry EVERY job of those
+        images - so a multi-model image's results never straddle a page
+        boundary. Rows are ordered image by image, upload order within an
+        image. Under search a group keeps only its matching jobs."""
+        def fn(session: Session):
+            needle = f"%{search.strip()}%" if search else None
+            images = select(JobRow.sha256, func.max(JobRow.created_at).label("last"))
+            if needle is not None:
+                images = images.where(
+                    JobRow.filename.ilike(needle)
+                    | JobRow.model.ilike(needle)
+                    | JobRow.tags_json.ilike(needle)
+                )
+            images = (
+                images.group_by(JobRow.sha256)
+                .order_by(desc("last"), JobRow.sha256)
+                .limit(limit)
+                .offset(offset)
+                .subquery()
+            )
+            total = session.execute(select(func.count()).select_from(images)).scalar_one()
+            shas = [row[0] for row in session.execute(select(images.c.sha256))]
+            if not shas:
+                return [], int(total)
+            condition = JobRow.sha256.in_(shas)
+            if needle is not None:
+                condition = condition & (
+                    JobRow.filename.ilike(needle)
+                    | JobRow.model.ilike(needle)
+                    | JobRow.tags_json.ilike(needle)
+                )
+            rows = list(session.scalars(select(JobRow).where(condition)))
+            position = {sha: i for i, sha in enumerate(shas)}
+            rows.sort(key=lambda r: (position.get(r.sha256, 0), r.created_at))
             return rows, int(total)
         return self._run(fn)
 

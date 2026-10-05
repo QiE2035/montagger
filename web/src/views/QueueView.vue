@@ -10,7 +10,8 @@ const dialog = useDialog();
 
 const PAGE_SIZE = 50;
 
-// Server-paged history; SSE overlays live state onto the loaded page.
+// Server-paged history, grouped by image server-side (total counts images,
+// not jobs); SSE overlays live state onto the loaded page.
 const rows = reactive<Map<string, Job>>(new Map());
 const page = ref(1);
 const total = ref(0);
@@ -25,7 +26,7 @@ const totalPages = computed(() => Math.max(1, Math.ceil(total.value / PAGE_SIZE)
 async function refresh() {
   loading.value = true;
   try {
-    const r = await api.jobs(PAGE_SIZE, (page.value - 1) * PAGE_SIZE, search.value);
+    const r = await api.jobs(PAGE_SIZE, (page.value - 1) * PAGE_SIZE, search.value, "", true);
     rows.clear();
     for (const job of r.jobs) rows.set(job.id, job);
     total.value = r.total;
@@ -66,9 +67,16 @@ onMounted(() => {
   es = connectEvents((job) => {
     if (rows.has(job.id)) {
       rows.set(job.id, { ...rows.get(job.id), ...job });
-    } else if (page.value === 1 && !search.value && (job.status === "queued" || job.status === "running")) {
+      return;
+    }
+    // The page is grouped by image: a new model's job for an image already
+    // on this page just joins its group; a brand-new image lands only on
+    // page 1 (and only while unfiltered), bumping the image total.
+    const known =
+      !!job.sha256 && [...rows.values()].some((j) => j.sha256 === job.sha256);
+    if (known || (page.value === 1 && !search.value && (job.status === "queued" || job.status === "running"))) {
       rows.set(job.id, job);
-      total.value += 1;
+      if (!known) total.value += 1;
     }
   });
 });
@@ -187,21 +195,43 @@ function clearFinished() {
   }).catch((e) => message.error(e.message));
 }
 
-function preview(job: Job) {
+function preview(group: Group) {
   dialog.create({
-    title: job.filename,
+    title: group.name,
     style: "width: min(92vw, 720px)",
     content: () =>
       h("div", { class: "flex flex-col gap-3" }, [
         h("img", {
-          src: `/api/v1/jobs/${job.id}/preview`,
+          src: `/api/v1/jobs/${group.jobs[0].id}/preview`,
           class: "max-h-[50vh] w-full rounded-xl object-contain",
           onerror: (e: Event) => ((e.target as HTMLImageElement).style.display = "none"),
         }),
-        h("div", { class: "text-xs text-[var(--mt-text-dim)]" }, [
-          `${job.model} · ${job.width ?? "?"}×${job.height ?? "?"} · ${job.elapsed_ms ?? "?"}ms`,
-        ]),
-        h(TagChips, { tags: job.tags ?? [] }),
+        ...group.jobs.map((job, i) =>
+          h(
+            "details",
+            { key: job.id, open: i === 0, class: "rounded-xl bg-[var(--mt-bg-soft)] px-3 py-2" },
+            [
+              h(
+                "summary",
+                { class: "flex cursor-pointer list-none items-center gap-2 text-xs [&::-webkit-details-marker]:hidden" },
+                [
+                  h("span", { class: "font-medium" }, job.model),
+                  h(
+                    "span",
+                    { class: "text-[var(--mt-text-dim)]" },
+                    `${statusLabel[job.status] ?? job.status} · ${job.width ?? "?"}×${job.height ?? "?"} · ${job.elapsed_ms ?? "?"}ms`,
+                  ),
+                ],
+              ),
+              h("div", { class: "mt-2 flex flex-col gap-1.5" }, [
+                job.status === "error"
+                  ? h("div", { class: "text-xs text-red-400" }, job.error ?? "")
+                  : null,
+                h(TagChips, { tags: job.tags ?? [] }),
+              ]),
+            ],
+          ),
+        ),
       ]),
   });
 }
@@ -281,7 +311,7 @@ function preview(job: Job) {
         v-for="group in historyGroups"
         :key="group.key"
         class="flex cursor-pointer flex-col gap-2 rounded-2xl border border-[var(--mt-border)] bg-[var(--mt-card)] p-3"
-        @click="preview(group.jobs[0])"
+        @click="preview(group)"
       >
         <div class="flex items-center gap-2">
           <input
@@ -340,7 +370,7 @@ function preview(job: Job) {
           @blur="submitPage"
           class="w-12 rounded-lg border border-[var(--mt-border)] bg-[var(--mt-card)] px-1 py-0.5 text-center text-xs outline-none focus:border-[var(--mt-primary)]"
         />
-        / {{ totalPages }} 页 · 共 {{ total }} 条
+        / {{ totalPages }} 页 · 共 {{ total }} 张图
       </span>
       <n-button quaternary size="small" :disabled="page >= totalPages" @click="goTo(page + 1)">
         <template #icon><ChevronRight :size="14" /></template>

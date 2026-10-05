@@ -64,6 +64,7 @@ export interface ModelsResponse {
 
 export interface JobsResponse {
   jobs: Job[];
+  /** grouped mode: image (sha) count; flat mode: job count */
   total: number;
   offset: number;
   limit: number;
@@ -147,10 +148,11 @@ export const api = {
   },
 
   models: () => api.get<ModelsResponse>("/api/v1/models"),
-  jobs: (limit = 50, offset = 0, search = "", status = "") => {
+  jobs: (limit = 50, offset = 0, search = "", status = "", grouped = false) => {
     const p = new URLSearchParams({ limit: String(limit), offset: String(offset) });
     if (search) p.set("q", search);
     if (status) p.set("status", status);
+    if (grouped) p.set("grouped", "1");
     return api.get<JobsResponse>(`/api/v1/jobs?${p}`);
   },
   job: (id: string) => api.get<Job>(`/api/v1/jobs/${id}`),

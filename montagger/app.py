@@ -471,9 +471,16 @@ def create_app(ctx: AppContext) -> FastAPI:
         offset: int = Query(default=0, ge=0),
         status: str | None = None,
         q: str | None = None,
+        grouped: bool = Query(default=False),
     ):
         require_auth(request)
-        rows, total = ctx.store.list_jobs(limit=limit, offset=offset, status=status, search=q)
+        # grouped: the page is a window over images (sha256), and each page
+        # carries every job of those images, so the UI's per-image grouping
+        # never splits a multi-model image across pages.
+        if grouped:
+            rows, total = ctx.store.list_job_groups(limit=limit, offset=offset, search=q)
+        else:
+            rows, total = ctx.store.list_jobs(limit=limit, offset=offset, status=status, search=q)
         return {
             "jobs": [_row_dict(row, live=_live_overlay(row.id)) for row in rows],
             "total": total,
