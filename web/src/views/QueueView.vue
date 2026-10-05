@@ -123,6 +123,16 @@ function toggleGroup(group: Group) {
   }
 }
 
+// Page-scoped: only the loaded rows exist client-side, and refresh prunes
+// the selection to whatever is still on screen.
+function selectAll() {
+  for (const job of rows.values()) selected.add(job.id);
+}
+
+function deselectAll() {
+  selected.clear();
+}
+
 function remove(job: Job) {
   api.deleteJob(job.id).then(refresh).catch((e) => message.error(e.message));
 }
@@ -203,6 +213,10 @@ function preview(job: Job) {
         <n-button quaternary size="small" :disabled="loading" @click="refresh">
           <template #icon><RefreshCw :size="14" /></template>
           刷新
+        </n-button>
+        <n-button quaternary size="small" @click="selectAll">全选</n-button>
+        <n-button quaternary size="small" :disabled="!selected.size" @click="deselectAll">
+          取消全选
         </n-button>
         <n-button quaternary size="small" @click="cancelAllQueued">取消全部排队</n-button>
         <n-button quaternary size="small" @click="clearFinished">
