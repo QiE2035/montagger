@@ -82,10 +82,12 @@ export interface Settings {
     max_upload_mb: number;
     disabled_categories: string[];
     idle_unload_min: number;
+    max_loaded: number;
     isolated: boolean;
     available_providers: string[];
     running_provider: string;
     model_root: string;
+    loaded: { name: string; idle_s: number | null }[];
   };
   queue: { max_pending: number; history_days: number };
   hf: { endpoint: string; has_token: boolean };
@@ -97,6 +99,7 @@ export interface Settings {
     push_images: boolean;
     gallery: string;
   };
+  log: { debug: boolean };
 }
 
 export interface Token {

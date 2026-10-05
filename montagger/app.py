@@ -113,6 +113,10 @@ class MonbooruUpdate(BaseModel):
     gallery: str | None = None
 
 
+class LogUpdate(BaseModel):
+    debug: bool | None = None
+
+
 class SettingsBody(BaseModel):
     server: ServerUpdate | None = None
     auth: AuthUpdate | None = None
@@ -120,6 +124,7 @@ class SettingsBody(BaseModel):
     queue: QueueUpdate | None = None
     hf: HfUpdate | None = None
     monbooru: MonbooruUpdate | None = None
+    log: LogUpdate | None = None
     thresholds: dict | None = None
 
 
@@ -677,6 +682,7 @@ def create_app(ctx: AppContext) -> FastAPI:
                 "intra_op_threads": cfg.models.intra_op_threads,
                 "max_upload_mb": cfg.models.max_upload_mb,
                 "idle_unload_min": cfg.models.idle_unload_min,
+                "max_loaded": cfg.models.max_loaded,
                 "isolated": cfg.models.isolated,
                 "disabled_categories": cfg.models.disabled_categories,
                 "available_providers": available_providers(),
@@ -698,6 +704,7 @@ def create_app(ctx: AppContext) -> FastAPI:
                 "push_images": cfg.monbooru.push_images,
                 "gallery": cfg.monbooru.gallery,
             },
+            "log": {"debug": cfg.log.debug},
         }
 
     @app.post("/api/v1/settings")
@@ -711,7 +718,7 @@ def create_app(ctx: AppContext) -> FastAPI:
         def mutate(config):
             if body.thresholds is not None:
                 config.thresholds = normalize_thresholds(dict(body.thresholds))
-            for section_name in ("server", "auth", "models", "queue", "hf", "monbooru"):
+            for section_name in ("server", "auth", "models", "queue", "hf", "monbooru", "log"):
                 update = getattr(body, section_name)
                 if update is None:
                     continue
@@ -736,6 +743,8 @@ def create_app(ctx: AppContext) -> FastAPI:
         after = ctx.cfg.current()
         if before.auth.password != after.auth.password:
             ctx.sessions.clear()
+        if before.log.debug != after.log.debug:
+            logx.set_debug(after.log.debug)
         if (
             tuple(getattr(after.models, k) for k in ep_keys) != ep_before
             or after.models.path != path_before

@@ -33,6 +33,11 @@ const tokens = ref<Token[]>([]);
 const installing = reactive<Record<string, boolean>>({});
 const newPassword = ref("");
 const newTokenName = ref("");
+const newHfToken = ref("");
+const hfEndpoint = ref("");
+const serverBind = ref("");
+const serverBaseUrl = ref("");
+const modelPath = ref("");
 const monbooruUrl = ref("");
 const monbooruStatus = reactive({
   paired: false,
@@ -121,6 +126,10 @@ async function load() {
       api.tokens(),
     ]);
     for (const m of models.value.models) draftFor(m); // seed drafts from effective
+    hfEndpoint.value = settings.value?.hf.endpoint ?? "";
+    serverBind.value = settings.value?.server.bind_address ?? "";
+    serverBaseUrl.value = settings.value?.server.base_url ?? "";
+    modelPath.value = settings.value?.models.path ?? "";
     try {
       health.value = await api.get("/health");
     } catch {
@@ -253,10 +262,51 @@ async function purgeHistory() {
 }
 
 async function applyPassword() {
+  const value = newPassword.value;
   try {
-    await save({ auth: { password: newPassword.value } });
+    await save({ auth: { password: value } });
     newPassword.value = "";
-    message.success(newPassword.value === "" ? "已关闭密码" : "密码已更新");
+    message.success(value === "" ? "已关闭密码" : "密码已更新");
+  } catch {
+    /* message shown by save() */
+  }
+}
+
+async function applyHfEndpoint() {
+  try {
+    await save({ hf: { endpoint: hfEndpoint.value.trim() } });
+    message.success("HF 端点已更新");
+  } catch {
+    /* message shown by save() */
+  }
+}
+
+async function applyHfToken() {
+  const value = newHfToken.value;
+  try {
+    await save({ hf: { token: value } });
+    newHfToken.value = "";
+    message.success(value === "" ? "已清除 HF Token" : "HF Token 已更新");
+  } catch {
+    /* message shown by save() */
+  }
+}
+
+async function applyServer() {
+  try {
+    await save({
+      server: { bind_address: serverBind.value.trim(), base_url: serverBaseUrl.value.trim() },
+    });
+    message.success("服务器设置已保存 · 监听地址重启后生效");
+  } catch {
+    /* message shown by save() */
+  }
+}
+
+async function applyModelPath() {
+  try {
+    await save({ models: { path: modelPath.value.trim() } });
+    message.success("模型目录已保存 · 引擎已重新加载");
   } catch {
     /* message shown by save() */
   }
@@ -322,6 +372,8 @@ const categoryZh: Record<string, string> = {
   species: "物种",
   year: "年份",
 };
+
+const categoryOptions = Object.entries(categoryZh).map(([value, label]) => ({ label, value }));
 </script>
 
 <template>
@@ -423,6 +475,17 @@ const categoryZh: Record<string, string> = {
               />
             </label>
             <label class="flex flex-col gap-1 text-xs text-[var(--mt-text-dim)]">
+              推理线程数（0 = 默认）
+              <NInputNumber
+                :value="settings.models.intra_op_threads"
+                size="small"
+                :min="0"
+                :max="64"
+                style="width: 110px"
+                @update:value="(v: number | null) => save({ models: { intra_op_threads: v ?? 0 } })"
+              />
+            </label>
+            <label class="flex flex-col gap-1 text-xs text-[var(--mt-text-dim)]">
               上传上限 (MB)
               <NInputNumber
                 :value="settings.models.max_upload_mb"
@@ -444,6 +507,29 @@ const categoryZh: Record<string, string> = {
                 @update:value="(v: number | null) => save({ models: { idle_unload_min: v ?? 0 } })"
               />
             </label>
+            <label class="flex flex-col gap-1 text-xs text-[var(--mt-text-dim)]">
+              同时驻留模型数（0 = 不限）
+              <NInputNumber
+                :value="settings.models.max_loaded"
+                size="small"
+                :min="0"
+                :max="64"
+                style="width: 130px"
+                @update:value="(v: number | null) => save({ models: { max_loaded: v ?? 1 } })"
+              />
+            </label>
+            <label class="flex flex-col gap-1 text-xs text-[var(--mt-text-dim)]">
+              全局禁用类别（不输出）
+              <NSelect
+                :value="settings.models.disabled_categories"
+                :options="categoryOptions"
+                multiple
+                clearable
+                style="width: 260px"
+                placeholder="无"
+                @update:value="(v: string[]) => save({ models: { disabled_categories: v } })"
+              />
+            </label>
             <label class="mb-1.5 flex items-center gap-2 text-xs text-[var(--mt-text-dim)]">
               <NSwitch
                 :value="settings.models.isolated"
@@ -461,6 +547,18 @@ const categoryZh: Record<string, string> = {
             模型目录：{{ settings.models.model_root }}
             <template v-if="health"> · 常驻内存 {{ health.rss_mb.toFixed(0) }} MB · 已加载 {{ health.models_loaded.length }} 个模型</template>
           </p>
+          <div class="mt-2 flex flex-wrap items-end gap-3">
+            <label class="flex flex-1 flex-col gap-1 text-xs text-[var(--mt-text-dim)]" style="min-width: 240px">
+              自定义模型目录（空 = 随仓库目录，保存后重新加载引擎）
+              <div class="flex gap-2">
+                <NInput v-model:value="modelPath" size="small" placeholder="空 = <仓库>/models" />
+                <NButton size="small" @click="applyModelPath">
+                  <template #icon><Check :size="14" /></template>
+                  保存
+                </NButton>
+              </div>
+            </label>
+          </div>
         </NCard>
       </section>
 
@@ -515,6 +613,17 @@ const categoryZh: Record<string, string> = {
               <template #icon><KeyRound :size="14" /></template>
               保存
             </NButton>
+            <label class="flex flex-col gap-1 text-xs text-[var(--mt-text-dim)]">
+              会话有效期（天）
+              <NInputNumber
+                :value="settings?.auth.session_days ?? 30"
+                size="small"
+                :min="1"
+                :max="365"
+                style="width: 110px"
+                @update:value="(v: number | null) => save({ auth: { session_days: v ?? 30 } })"
+              />
+            </label>
           </div>
 
           <div class="mt-4 flex flex-col gap-2">
@@ -534,6 +643,76 @@ const categoryZh: Record<string, string> = {
               </NButton>
             </div>
           </div>
+        </NCard>
+      </section>
+
+      <!-- Server -->
+      <section v-if="settings" class="flex flex-col gap-3">
+        <h2 class="px-1 text-sm font-medium text-[var(--mt-text-dim)]">服务器</h2>
+        <NCard size="small" class="!rounded-2xl">
+          <div class="flex flex-wrap items-end gap-3">
+            <label class="flex flex-col gap-1 text-xs text-[var(--mt-text-dim)]">
+              监听地址（重启后生效）
+              <NInput v-model:value="serverBind" size="small" placeholder="0.0.0.0:8457" style="width: 200px" />
+            </label>
+            <label class="flex flex-col gap-1 text-xs text-[var(--mt-text-dim)]">
+              对外地址（monbooru 配对回调用）
+              <NInput v-model:value="serverBaseUrl" size="small" placeholder="http://192.168.1.5:8457" style="width: 240px" />
+            </label>
+            <NButton size="small" @click="applyServer">
+              <template #icon><Check :size="14" /></template>
+              保存
+            </NButton>
+            <label class="mb-1.5 flex items-center gap-2 text-xs text-[var(--mt-text-dim)]">
+              <NSwitch
+                :value="settings?.log.debug ?? false"
+                size="small"
+                @update:value="(v: boolean) => save({ log: { debug: v } })"
+              />
+              调试日志（保存即生效）
+            </label>
+          </div>
+        </NCard>
+      </section>
+
+      <!-- HuggingFace -->
+      <section v-if="settings" class="flex flex-col gap-3">
+        <h2 class="px-1 text-sm font-medium text-[var(--mt-text-dim)]">HuggingFace</h2>
+        <NCard size="small" class="!rounded-2xl">
+          <div class="flex flex-wrap items-end gap-3">
+            <label class="flex flex-col gap-1 text-xs text-[var(--mt-text-dim)]">
+              镜像端点（下载模型时生效）
+              <div class="flex gap-2">
+                <NInput v-model:value="hfEndpoint" size="small" placeholder="https://huggingface.co" style="width: 240px" />
+                <NButton size="small" @click="applyHfEndpoint">
+                  <template #icon><Check :size="14" /></template>
+                  保存
+                </NButton>
+              </div>
+            </label>
+          </div>
+          <div class="mt-3 flex flex-wrap items-end gap-3">
+            <label class="flex flex-col gap-1 text-xs text-[var(--mt-text-dim)]">
+              {{ settings?.hf.has_token ? "访问令牌（已设置 · 留空保存即清除）" : "访问令牌（gated 模型下载需要）" }}
+              <div class="flex gap-2">
+                <NInput
+                  v-model:value="newHfToken"
+                  type="password"
+                  show-password-on="click"
+                  size="small"
+                  placeholder="hf_..."
+                  style="width: 240px"
+                />
+                <NButton size="small" :disabled="!newHfToken && !settings?.hf.has_token" @click="applyHfToken">
+                  <template #icon><KeyRound :size="14" /></template>
+                  保存
+                </NButton>
+              </div>
+            </label>
+          </div>
+          <p class="mt-2 text-xs text-[var(--mt-text-dim)]">
+            环境变量 HF_TOKEN / HUGGING_FACE_HUB_TOKEN 优先于此处保存的令牌 · HF_ENDPOINT 优先于端点设置
+          </p>
         </NCard>
       </section>
 

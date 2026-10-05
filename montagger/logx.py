@@ -19,5 +19,11 @@ def setup(debug: bool = False) -> None:
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
+def set_debug(debug: bool) -> None:
+    """Flip the root level at runtime (the settings page's debug switch);
+    setup() stays the boot-time path that owns handlers."""
+    logging.getLogger().setLevel(logging.DEBUG if debug else logging.INFO)
+
+
 def get(name: str) -> logging.Logger:
     return logging.getLogger(name)
