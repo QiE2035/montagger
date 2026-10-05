@@ -16,6 +16,7 @@ import json
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import (
@@ -24,6 +25,7 @@ from fastapi.responses import (
     JSONResponse,
     StreamingResponse,
 )
+from pydantic import BaseModel, Field
 
 from . import __version__, auth, logx, store
 from .config import Provider, normalize_thresholds
@@ -35,6 +37,90 @@ from .queue import Job, QueueFull, Runner, UnknownJob
 log = logx.get("api")
 
 SESSION_COOKIE = auth._SESSION_COOKIE
+
+
+# -- request bodies -------------------------------------------------------------
+# Declared as pydantic models so malformed input answers with the framework's
+# standard 422 instead of a late 500. relay/tag stays hand-parsed: monbooru
+# expects every reply to be HTTP 200 with an ok flag.
+
+class MemoryReleaseBody(BaseModel):
+    models: list[str] | None = None  # named sessions to drop; absent = all
+
+
+class LoginBody(BaseModel):
+    password: str = ""
+
+
+class JobsBatchBody(BaseModel):
+    action: Literal["delete", "cancel"]
+    ids: list[str] = Field(default_factory=list)
+    all_done: bool = False
+    all_queued: bool = False
+
+
+class TokenCreateBody(BaseModel):
+    name: str = ""
+
+
+class PairBody(BaseModel):
+    api_url: str = ""
+
+
+# Settings posts are partial: only the keys the UI touched are present, so
+# every field is optional and only the explicitly provided ones reach the
+# config. password / token follow one rule: an empty string clears, an
+# explicitly sent null or an absent key means untouched.
+class ServerUpdate(BaseModel):
+    bind_address: str | None = None
+    base_url: str | None = None
+
+
+class AuthUpdate(BaseModel):
+    password: str | None = None
+    session_days: int | None = None
+
+
+class ModelsUpdate(BaseModel):
+    path: str | None = None
+    default: str | None = None
+    default_models: list[str] | None = None
+    execution_provider: str | None = None
+    device_id: int | None = None
+    intra_op_threads: int | None = None
+    max_upload_mb: int | None = None
+    idle_unload_min: int | None = None
+    isolated: bool | None = None
+    disabled_categories: list[str] | None = None
+
+
+class QueueUpdate(BaseModel):
+    max_pending: int | None = None
+    history_days: int | None = None
+
+
+class HfUpdate(BaseModel):
+    token: str | None = None
+    endpoint: str | None = None
+
+
+class MonbooruUpdate(BaseModel):
+    api_url: str | None = None
+    web_url: str | None = None
+    token: str | None = None
+    push_tags: bool | None = None
+    push_images: bool | None = None
+    gallery: str | None = None
+
+
+class SettingsBody(BaseModel):
+    server: ServerUpdate | None = None
+    auth: AuthUpdate | None = None
+    models: ModelsUpdate | None = None
+    queue: QueueUpdate | None = None
+    hf: HfUpdate | None = None
+    monbooru: MonbooruUpdate | None = None
+    thresholds: dict | None = None
 
 
 def _rss_mb() -> float:
@@ -166,20 +252,15 @@ def create_app(ctx: AppContext) -> FastAPI:
         }
 
     @app.post("/api/v1/memory/release")
-    async def memory_release(request: Request):
+    async def memory_release(request: Request, body: MemoryReleaseBody | None = None):
         """Manual, proactive release: unload model sessions (all, or the
         named ones), forget finished Job objects, collect, and hand freed
         heap back to the OS where the platform allows. Safe to call
         anytime; the next tagging request just reloads what it needs."""
         require_auth(request)
-        body: dict = {}
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-        names = body.get("models") if isinstance(body, dict) else None
+        names = body.models if body is not None else None
         unloaded: list[str] = []
-        if isinstance(names, list) and names:
+        if names:
             for name in names:
                 if ctx.engine.unload(str(name)):
                     unloaded.append(str(name))
@@ -212,13 +293,11 @@ def create_app(ctx: AppContext) -> FastAPI:
         return {"guard_active": guard, "authenticated": ok, "open_lan": not guard}
 
     @app.post("/api/v1/auth/login")
-    async def login(request: Request):
+    async def login(request: Request, body: LoginBody):
         cfg = ctx.cfg.current()
         if not cfg.auth.password:
             raise HTTPException(status_code=400, detail="no password configured")
-        body = await request.json()
-        password = str(body.get("password", ""))
-        if not hmac.compare_digest(password.encode(), cfg.auth.password.encode()):
+        if not hmac.compare_digest(body.password.encode(), cfg.auth.password.encode()):
             raise HTTPException(status_code=401, detail="wrong password")
         sid = ctx.sessions.new(cfg.auth.session_days)
         response = JSONResponse({"ok": True})
@@ -405,24 +484,19 @@ def create_app(ctx: AppContext) -> FastAPI:
         return {"ok": True}
 
     @app.post("/api/v1/jobs/batch")
-    async def jobs_batch(request: Request):
+    async def jobs_batch(request: Request, body: JobsBatchBody):
         """{action: delete|cancel, ids?: [...], all_done?: true,
         all_queued?: true} - the UI's select-all helpers."""
         require_auth(request)
-        body = await request.json()
-        action = str(body.get("action", ""))
-        if action not in ("delete", "cancel"):
-            raise HTTPException(status_code=400, detail="action must be delete or cancel")
-        ids = [str(i) for i in body.get("ids") or []]
-        affected: list[str] = list(ids)
-        if body.get("all_done"):
+        affected: list[str] = list(body.ids)
+        if body.all_done:
             affected.extend(ctx.store.list_job_ids(status=store.DONE))
-        if body.get("all_queued"):
+        if body.all_queued:
             affected.extend(ctx.runner.queued_ids())
         affected = list(dict.fromkeys(affected))
         if not affected:
             return {"ok": True, "affected": 0}
-        if action == "cancel":
+        if body.action == "cancel":
             n = sum(1 for jid in affected if ctx.runner.cancel(jid))
             return {"ok": True, "affected": n}
         n = ctx.store.delete_jobs(affected)
@@ -567,10 +641,9 @@ def create_app(ctx: AppContext) -> FastAPI:
         ]
 
     @app.post("/api/v1/tokens")
-    async def tokens_create(request: Request):
+    async def tokens_create(request: Request, body: TokenCreateBody):
         require_auth(request)
-        body = await request.json()
-        token = ctx.store.add_token(str(body.get("name", "")))
+        token = ctx.store.add_token(body.name)
         return {"token": token}
 
     @app.delete("/api/v1/tokens/{token_id}")
@@ -628,49 +701,32 @@ def create_app(ctx: AppContext) -> FastAPI:
         }
 
     @app.post("/api/v1/settings")
-    async def settings_post(request: Request):
+    async def settings_post(request: Request, body: SettingsBody):
         require_auth(request)
-        body = await request.json()
-        if not isinstance(body, dict):
-            raise HTTPException(status_code=400, detail="body must be an object")
         before = ctx.cfg.current()
         ep_keys = ("execution_provider", "device_id", "intra_op_threads")
         path_before = before.models.path
         ep_before = tuple(getattr(before.models, k) for k in ep_keys)
 
-        allowed_sections = (
-            "server",
-            "auth",
-            "models",
-            "queue",
-            "hf",
-            "monbooru",
-            "thresholds",
-        )
-        updates = {k: v for k, v in body.items() if k in allowed_sections}
-
         def mutate(config):
-            for section_name, values in updates.items():
-                if section_name == "thresholds":
-                    config.thresholds = normalize_thresholds(dict(values))
+            if body.thresholds is not None:
+                config.thresholds = normalize_thresholds(dict(body.thresholds))
+            for section_name in ("server", "auth", "models", "queue", "hf", "monbooru"):
+                update = getattr(body, section_name)
+                if update is None:
                     continue
-                if not isinstance(values, dict):
-                    continue
-                if section_name == "auth" and "password" in values:
-                    config.auth.password = str(values["password"])
-                    values = {k: v for k, v in values.items() if k != "password"}
-                if section_name == "monbooru" and "token" in values:
-                    config.monbooru.token = str(values["token"] or "")
-                    values = {k: v for k, v in values.items() if k != "token"}
-                if section_name == "hf" and "token" in values:
-                    config.hf.token = str(values["token"] or "")
-                    values = {k: v for k, v in values.items() if k != "token"}
-                section = getattr(config, section_name, None)
-                if section is None:
-                    continue
+                # An explicitly sent null means untouched, an empty string clears.
+                values = {
+                    key: value
+                    for key, value in update.model_dump(exclude_unset=True).items()
+                    if value is not None
+                }
+                section = getattr(config, section_name)
+                secret = "password" if section_name == "auth" else "token"
+                if secret in values:
+                    setattr(section, secret, values.pop(secret))
                 for key, value in values.items():
-                    if hasattr(section, key):
-                        setattr(section, key, value)
+                    setattr(section, key, value)
 
         try:
             ctx.cfg.update(mutate)
@@ -733,14 +789,13 @@ def create_app(ctx: AppContext) -> FastAPI:
         return {"status": "removed"}
 
     @app.post("/api/v1/monbooru/pair")
-    async def monbooru_pair(request: Request):
+    async def monbooru_pair(request: Request, body: PairBody):
         require_auth(request)
         if ctx.integration is None:
             raise HTTPException(
                 status_code=400, detail="monbooru integration unavailable"
             )
-        body = await request.json()
-        api_url = str(body.get("api_url", "")).strip().rstrip("/")
+        api_url = body.api_url.strip().rstrip("/")
         if not api_url.startswith(("http://", "https://")):
             raise HTTPException(
                 status_code=422, detail="set the monbooru API url first"
