@@ -86,6 +86,11 @@ class ModelsConfig(_Section):
     # Minutes a loaded model sits unused before its session is dropped
     # (RAM/VRAM back to the system). 0 keeps models loaded forever.
     idle_unload_min: int = Field(0, ge=0, le=1440)
+    # Models that may stay resident at once; loading one more evicts the
+    # least recently used. Keeps multi-model batches from exhausting the
+    # accelerator - 1 means one model runs its whole slice of the queue
+    # before the next one loads. 0 disables the cap.
+    max_loaded: int = Field(1, ge=0, le=64)
     # Run all ONNX sessions in a child process. ORT never returns the CUDA
     # context to the OS within a process, so this is the only way
     # 立即释放内存 can actually shrink RSS. Turn off only to shave the

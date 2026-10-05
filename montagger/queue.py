@@ -88,6 +88,9 @@ class Runner:
         # Optional post-done hook (monbooru auto-push); set by the app layer.
         self.on_done = None
         self._queue: asyncio.Queue[Job] = asyncio.Queue(maxsize=max_pending)
+        # Submitted jobs wait here for their turn, in arrival order; the
+        # worker picks from this list by model affinity, not FIFO head.
+        self._pending: list[Job] = []
         self._jobs: dict[str, Job] = {}
         self._order: list[str] = []  # FIFO over _jobs for byte eviction
         self._subscribers: set[asyncio.Queue] = set()
@@ -153,9 +156,7 @@ class Runner:
 
     async def _worker_loop(self) -> None:
         while True:
-            job = await self._queue.get()
-            if job.status != store.QUEUED:  # canceled while queued
-                continue
+            job = await self._next_job()
             try:
                 await self._process(job)
             except asyncio.CancelledError:
@@ -168,6 +169,33 @@ class Runner:
                 self._broadcast(job)
             finally:
                 self._evict_bytes()
+
+    async def _next_job(self) -> Job:
+        """Fold the intake queue into the pending list, then hand out work
+        by model affinity: queued jobs for an already-resident model run
+        before anything that would load (and, under the residency cap,
+        evict) another one. A multi-model batch therefore completes one
+        model's slice of the queue before swapping models, instead of
+        reloading on every image."""
+        while True:
+            while True:
+                try:
+                    job = self._queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                if job.status == store.QUEUED:  # canceled while queued
+                    self._pending.append(job)
+            self._pending = [j for j in self._pending if j.status == store.QUEUED]
+            if self._pending:
+                loaded = {m["name"] for m in self.engine.loaded_models()}
+                for job in self._pending:
+                    if job.model in loaded:
+                        self._pending.remove(job)
+                        return job
+                return self._pending.pop(0)
+            job = await self._queue.get()
+            if job.status == store.QUEUED:
+                self._pending.append(job)
 
     async def _process(self, job: Job) -> None:
         job.status = store.RUNNING

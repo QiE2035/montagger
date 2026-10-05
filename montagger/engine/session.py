@@ -35,6 +35,25 @@ class EngineError(Exception):
     """A model or provider problem the operator must fix."""
 
 
+def evict_to_limit(runtimes: dict, last_use: dict, limit: int, unload) -> int:
+    """Unload least-recently-used models until fewer than `limit` remain.
+
+    Both session managers call this before loading one more model, so the
+    configured residency cap holds. limit <= 0 disables the cap. `unload`
+    is the manager's own invalidate(); it pops from both dicts as well,
+    which this tolerates. Returns how many models were evicted."""
+    if limit <= 0:
+        return 0
+    evicted = 0
+    while len(runtimes) >= limit:
+        victim = min(runtimes, key=lambda n: last_use.get(n, 0.0))
+        unload(victim)
+        runtimes.pop(victim, None)
+        last_use.pop(victim, None)
+        evicted += 1
+    return evicted
+
+
 def available_providers() -> list[str]:
     return list(ort.get_available_providers())
 
@@ -278,6 +297,9 @@ class SessionManager:
         self.provider_short = provider
         self.device_id = device_id
         self.intra_op_threads = intra_op_threads
+        # Residency cap; the Engine refreshes it from config on every tag so
+        # a settings change takes effect without a restart. 0 = unlimited.
+        self.max_loaded = 0
         self._runtimes: dict[str, ModelRuntime] = {}
         self._last_use: dict[str, float] = {}
 
@@ -287,6 +309,7 @@ class SessionManager:
             self._last_use[name] = time.monotonic()
             return runtime
         runtime = ModelRuntime(name, model_dir, self.provider, self.device_id, self.intra_op_threads)
+        evict_to_limit(self._runtimes, self._last_use, self.max_loaded, self.invalidate)
         self._runtimes[name] = runtime
         self._last_use[name] = time.monotonic()
         return runtime
@@ -356,6 +379,8 @@ class WorkerSessionManager:
         self.provider_short = provider
         self.device_id = device_id
         self.intra_op_threads = intra_op_threads
+        # Residency cap; see SessionManager. 0 = unlimited.
+        self.max_loaded = 0
         self._runtimes: dict[str, RemoteRuntime] = {}
         self._last_use: dict[str, float] = {}
         self._proc: subprocess.Popen | None = None
@@ -410,6 +435,7 @@ class WorkerSessionManager:
             # Mirror in-process timing: file problems raise here, before any
             # queue work starts.
             probe = RemoteRuntime(name, model_dir, input_size=0)
+            evict_to_limit(self._runtimes, self._last_use, self.max_loaded, self.invalidate)
             reply = self._request({"op": "load", "model": name, "dir": str(model_dir)})
             probe.input_size = int(reply.get("input_size") or probe.profile.input_size)
             if probe.input_size <= 0:

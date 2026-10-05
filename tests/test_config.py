@@ -67,3 +67,20 @@ def test_out_of_range_rejected(provider: Provider):
         provider.update(mutate)
     # the raising mutator leaves everything untouched
     assert provider.current().models.max_upload_mb == 100
+
+
+def test_max_loaded_range(provider: Provider):
+    import pytest
+    from pydantic import ValidationError
+
+    def below(config: Config):
+        config.models.max_loaded = -1
+
+    def above(config: Config):
+        config.models.max_loaded = 65
+
+    with pytest.raises(ValidationError):
+        provider.update(below)
+    with pytest.raises(ValidationError):
+        provider.update(above)
+    assert provider.current().models.max_loaded == 1  # default survives

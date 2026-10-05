@@ -258,6 +258,9 @@ class Engine:
         if reason:
             raise EngineError(f"model {name}: {reason}")
 
+        # Residency cap straight from config every call: changing it in the
+        # settings takes effect on the next model load, no restart.
+        self._sessions.max_loaded = cfg.models.max_loaded
         runtime: ModelRuntime = self._sessions.get(self.model_root / name, name)
         started = time.perf_counter()
         scores, width, height = runtime.infer(data)
