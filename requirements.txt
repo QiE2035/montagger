@@ -22,6 +22,7 @@ pillow
 pillow-heif
 sqlalchemy
 httpx
+pydantic
 tomli-w
 
 # development / tests
