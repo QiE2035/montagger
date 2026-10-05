@@ -91,6 +91,10 @@ class ModelsConfig(_Section):
     # accelerator - 1 means one model runs its whole slice of the queue
     # before the next one loads. 0 disables the cap.
     max_loaded: int = Field(1, ge=0, le=64)
+    # Unload every model the moment the queue runs dry (no queued, no
+    # running work). Independent of idle_unload_min; on a small-VRAM box
+    # this hands the accelerator back after every batch.
+    unload_on_drain: bool = False
     # Run all ONNX sessions in a child process. ORT never returns the CUDA
     # context to the OS within a process, so this is the only way
     # 立即释放内存 can actually shrink RSS. Turn off only to shave the

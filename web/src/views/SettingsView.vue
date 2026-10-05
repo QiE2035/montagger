@@ -538,6 +538,14 @@ const categoryOptions = Object.entries(categoryZh).map(([value, label]) => ({ la
               />
               独立推理进程
             </label>
+            <label class="mb-1.5 flex items-center gap-2 text-xs text-[var(--mt-text-dim)]">
+              <NSwitch
+                :value="settings.models.unload_on_drain"
+                size="small"
+                @update:value="(v: boolean) => save({ models: { unload_on_drain: v } })"
+              />
+              队列清空后立即卸载
+            </label>
             <NButton size="small" :loading="releasing" @click="releaseMemory()">
               <template #icon><MemoryStick :size="14" /></template>
               立即释放内存

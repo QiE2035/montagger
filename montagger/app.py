@@ -90,6 +90,8 @@ class ModelsUpdate(BaseModel):
     intra_op_threads: int | None = None
     max_upload_mb: int | None = None
     idle_unload_min: int | None = None
+    max_loaded: int | None = None
+    unload_on_drain: bool | None = None
     isolated: bool | None = None
     disabled_categories: list[str] | None = None
 
@@ -690,6 +692,7 @@ def create_app(ctx: AppContext) -> FastAPI:
                 "max_upload_mb": cfg.models.max_upload_mb,
                 "idle_unload_min": cfg.models.idle_unload_min,
                 "max_loaded": cfg.models.max_loaded,
+                "unload_on_drain": cfg.models.unload_on_drain,
                 "isolated": cfg.models.isolated,
                 "disabled_categories": cfg.models.disabled_categories,
                 "available_providers": available_providers(),
@@ -918,6 +921,17 @@ def create_app(ctx: AppContext) -> FastAPI:
             )
 
         ctx.runner.on_done = _auto_push
+
+        async def _drain_unload():
+            # The queue ran completely dry and unload_on_drain is on: hand
+            # the accelerator back (the isolated worker dies with its
+            # sessions). Re-reads config on every drain, so the switch
+            # takes effect without a restart.
+            if ctx.cfg.current().models.unload_on_drain:
+                ctx.engine.unload_all()
+                log.info("queue drained; every model session unloaded")
+
+        ctx.runner.on_drain = _drain_unload
 
     # -- SPA hosting -----------------------------------------------------------------
 

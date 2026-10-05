@@ -84,6 +84,7 @@ export interface Settings {
     disabled_categories: string[];
     idle_unload_min: number;
     max_loaded: number;
+    unload_on_drain: boolean;
     isolated: boolean;
     available_providers: string[];
     running_provider: string;

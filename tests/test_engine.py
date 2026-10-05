@@ -142,3 +142,29 @@ def test_queue_runs_one_models_slice_before_swapping(tmp_path):
 
     # submitted image-major (a,b,a,b,a); affinity completes a's slice first
     assert asyncio.run(scenario()) == ["a", "a", "a", "b", "b"]
+
+
+def test_drain_hook_fires_only_when_queue_runs_dry():
+    async def scenario() -> list[int]:
+        engine = _FakeEngine()
+        runner = Runner(engine, _FakeStore(), 0)
+        drained_at: list[int] = []
+
+        async def on_drain():
+            drained_at.append(len(engine.order))
+
+        runner.on_drain = on_drain
+        runner.start()
+        jobs = [make_job(i, m) for i, m in enumerate(("a", "a", "b"))]
+        for job in jobs:
+            await runner.submit(job)
+        for _ in range(500):
+            if all(job.status in store._TERMINAL for job in jobs):
+                break
+            await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)  # let the post-drain hook settle
+        await runner.stop()
+        return drained_at
+
+    # no drain while b's job is still queued; exactly one drain at the end
+    assert asyncio.run(scenario()) == [3]

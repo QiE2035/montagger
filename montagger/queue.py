@@ -87,6 +87,10 @@ class Runner:
         self.max_pending = max_pending
         # Optional post-done hook (monbooru auto-push); set by the app layer.
         self.on_done = None
+        # Optional drain hook: awaited when the queue runs completely dry
+        # (no pending, no intake, no inline inference) - the app layer wires
+        # the unload-on-drain switch here.
+        self.on_drain = None
         self._queue: asyncio.Queue[Job] = asyncio.Queue(maxsize=max_pending)
         # Submitted jobs wait here for their turn, in arrival order; the
         # worker picks from this list by model affinity, not FIFO head.
@@ -169,6 +173,20 @@ class Runner:
                 self._broadcast(job)
             finally:
                 self._evict_bytes()
+            await self._maybe_drain()
+
+    async def _maybe_drain(self) -> None:
+        """Queue dry: hand the drain hook the inference lock so an inline
+        (wait=true) job cannot race the unload, and re-check under it -
+        work may have arrived while we waited."""
+        if self.on_drain is None or self._pending or not self._queue.empty():
+            return
+        if self._infer_lock.locked():
+            return
+        async with self._infer_lock:
+            if self._pending or not self._queue.empty():
+                return
+            await self.on_drain()
 
     async def _next_job(self) -> Job:
         """Fold the intake queue into the pending list, then hand out work
