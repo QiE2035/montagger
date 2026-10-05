@@ -100,6 +100,8 @@ export interface Settings {
     push_tags: boolean;
     push_images: boolean;
     gallery: string;
+    relay_concurrency: number;
+    timeout_s: number;
   };
   log: { debug: boolean };
 }

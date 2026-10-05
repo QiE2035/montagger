@@ -26,6 +26,74 @@ def test_wire_tags_prefix_every_category():
     ]
 
 
+def test_relay_gate_bounds_concurrency(tmp_path, monkeypatch):
+    """A huge relay push streams through at the configured width: in-flight
+    downloads never exceed monbooru.relay_concurrency."""
+    import asyncio
+    import threading
+    import time
+    import types
+
+    from montagger import store
+    from montagger.config import Provider
+    from montagger.engine.backend import TagResult
+    from montagger.pair import Integration
+
+    lock = threading.Lock()
+    stats = {"current": 0, "max": 0, "done": 0}
+
+    class FakeClient:
+        def __init__(self, cfg):
+            pass
+
+        def get_file(self, image_id):
+            with lock:
+                stats["current"] += 1
+                stats["max"] = max(stats["max"], stats["current"])
+            time.sleep(0.05)
+            with lock:
+                stats["current"] -= 1
+                stats["done"] += 1
+            return b"img"
+
+        def enrich(self, *a, **k):
+            pass
+
+        def report_fetch(self, *a, **k):
+            pass
+
+    class FakeRunner:
+        def __init__(self):
+            self.store = types.SimpleNamespace(
+                find_by_hash=lambda *a, **k: None,
+                create_job=lambda **k: None,
+                set_pushed=lambda *a, **k: None,
+            )
+
+        async def submit(self, job):
+            job.status = store.DONE
+            job.result = TagResult(
+                model=job.model, provider="cpu", width=1, height=1,
+                elapsed_ms=1, tags=[], rating=None,
+            )
+            job.done.set()
+
+    monkeypatch.setattr("montagger.pair.MonbooruClient", FakeClient)
+    cfg = Provider(tmp_path / "c.toml")
+    cfg.update(lambda c: setattr(c.monbooru, "relay_concurrency", 2))
+
+    async def scenario() -> int:
+        integration = Integration(cfg, tmp_path / "creds.json", FakeRunner())
+        integration.schedule_retag(list(range(8)))
+        while stats["done"] < 8:
+            await asyncio.sleep(0.01)
+        integration.stop()
+        return stats["max"]
+
+    max_concurrent = asyncio.run(scenario())
+    assert max_concurrent == 2  # 8 pushes stream two at a time, never more
+
+
 def test_wire_tags_colon_in_name_survives():
     # Only the first colon splits: "general::3" → category general, name ":3".
     tags = [ScoredTag(name=":3", category="general", confidence=0.9)]

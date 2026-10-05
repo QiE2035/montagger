@@ -137,6 +137,13 @@ class MonbooruConfig(_Section):
     push_tags: bool = True
     push_images: bool = False
     gallery: str = ""
+    # Relay pipeline width: images fetched and tagged at once. A push of
+    # any size streams through at this width instead of pulling every
+    # image's bytes into RAM. Fixed at startup.
+    relay_concurrency: int = Field(32, ge=1, le=512)
+    # Every call into monbooru (fetch, enrich, push) reads this per call,
+    # so a change applies without a restart.
+    timeout_s: int = Field(60, ge=5, le=600)
 
 
 class LogConfig(_Section):

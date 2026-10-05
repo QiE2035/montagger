@@ -15,6 +15,7 @@ import hashlib
 import json
 import secrets
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -67,10 +68,11 @@ class MonbooruClient:
         if bearer:
             headers["Authorization"] = f"Bearer {bearer}"
         url = self._base() + path
+        timeout = float(self.cfg.current().monbooru.timeout_s)
         try:
             resp = httpx.request(
                 method, url, json=json_body, files=files, data=data,
-                headers=headers, timeout=60,
+                headers=headers, timeout=timeout,
             )
         except httpx.HTTPError as err:
             raise PairError(f"monbooru unreachable: {err}") from err
@@ -245,6 +247,17 @@ class Integration:
         self._creds: Credentials | None = None
         self._waiting = threading.Event()  # an offer is on the table
         self._tasks: set[asyncio.Task] = set()
+        # Relay pipeline width (monbooru.relay_concurrency, fixed at
+        # startup): one slot per in-flight image - download, queue, tag,
+        # enrich - so a push of any size streams through at that width
+        # instead of pulling every image's bytes into RAM at once.
+        width = max(1, int(self.cfg.current().monbooru.relay_concurrency))
+        self._relay_gate = asyncio.Semaphore(width)
+        # Dedicated fetch threads: concurrent downloads must not occupy the
+        # default executor that inference runs on.
+        self._fetch_pool = ThreadPoolExecutor(
+            max_workers=min(8, width), thread_name_prefix="monbooru-fetch"
+        )
         self._thread: threading.Thread | None = None
         self._load()
 
@@ -299,6 +312,7 @@ class Integration:
     def stop(self) -> None:
         self._stop.set()
         self._wake.set()
+        self._fetch_pool.shutdown(wait=False)
 
     def kick(self) -> None:
         """Config changed (api_url or manual re-pair): wake the loop."""
@@ -394,6 +408,13 @@ class Integration:
         return count
 
     async def _retag_one(self, image_id: int) -> None:
+        """One relay slot covers the whole pipeline - fetch, queue, tag,
+        enrich - so a push of any size streams through at the configured
+        width instead of pulling every image's bytes into RAM at once."""
+        async with self._relay_gate:
+            await self._retag_one_locked(image_id)
+
+    async def _retag_one_locked(self, image_id: int) -> None:
         """Fetch once, tag with EVERY configured model, and enrich each
         model's result as its own source (`montagger/<model>`) - the tag
         sets never merge on monbooru's side, so each model's read of the
@@ -404,7 +425,9 @@ class Integration:
         runner = self.runner
         client = MonbooruClient(self.cfg)
         try:
-            data = await asyncio.to_thread(client.get_file, image_id)
+            data = await asyncio.get_running_loop().run_in_executor(
+                self._fetch_pool, client.get_file, image_id
+            )
             sha256 = hashlib.sha256(data).hexdigest()
             md5 = hashlib.md5(data).hexdigest()
             models = resolve_models(self.cfg.current())

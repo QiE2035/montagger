@@ -113,6 +113,8 @@ class MonbooruUpdate(BaseModel):
     push_tags: bool | None = None
     push_images: bool | None = None
     gallery: str | None = None
+    relay_concurrency: int | None = None
+    timeout_s: int | None = None
 
 
 class LogUpdate(BaseModel):
@@ -713,6 +715,8 @@ def create_app(ctx: AppContext) -> FastAPI:
                 "push_tags": cfg.monbooru.push_tags,
                 "push_images": cfg.monbooru.push_images,
                 "gallery": cfg.monbooru.gallery,
+                "relay_concurrency": cfg.monbooru.relay_concurrency,
+                "timeout_s": cfg.monbooru.timeout_s,
             },
             "log": {"debug": cfg.log.debug},
         }

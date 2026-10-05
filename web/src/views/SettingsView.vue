@@ -782,11 +782,35 @@ const categoryOptions = Object.entries(categoryZh).map(([value, label]) => ({ la
                 推送图片
               </label>
             </div>
-            <p class="mt-2 text-xs text-[var(--mt-text-dim)]">
-              推送标签：已在 monbooru 的图片自动回写标签（每模型独立 source，互不合并）·
-              推送图片：直传的原图会新建为 monbooru 图片，标签随图附带 ·
-              只开「推送标签」时，未推送过的直传图标签仅保存在本机
-            </p>
+          <p class="mt-2 text-xs text-[var(--mt-text-dim)]">
+            推送标签：已在 monbooru 的图片自动回写标签（每模型独立 source，互不合并）·
+            推送图片：直传的原图会新建为 monbooru 图片，标签随图附带 ·
+            只开「推送标签」时，未推送过的直传图标签仅保存在本机
+          </p>
+          <div class="mt-3 flex flex-wrap items-end gap-3">
+            <label class="flex flex-col gap-1 text-xs text-[var(--mt-text-dim)]">
+              批量打标并发（重启后生效）
+              <NInputNumber
+                :value="settings?.monbooru.relay_concurrency ?? 32"
+                size="small"
+                :min="1"
+                :max="512"
+                style="width: 130px"
+                @update:value="(v: number | null) => save({ monbooru: { relay_concurrency: v ?? 32 } })"
+              />
+            </label>
+            <label class="flex flex-col gap-1 text-xs text-[var(--mt-text-dim)]">
+              调用超时（秒，即时生效）
+              <NInputNumber
+                :value="settings?.monbooru.timeout_s ?? 60"
+                size="small"
+                :min="5"
+                :max="600"
+                style="width: 130px"
+                @update:value="(v: number | null) => save({ monbooru: { timeout_s: v ?? 60 } })"
+              />
+            </label>
+          </div>
           </template>
         </NCard>
       </section>
