@@ -183,3 +183,22 @@ def test_queue_memory_caps():
     assert [job.data == b"" for job in jobs] == [True, True, True, False]
     # and only max_job_objects finished Job objects survive
     assert set(runner._jobs) == {"job-2", "job-3"}
+
+
+def test_monbooru_jobs_never_keep_preview_bytes():
+    """monbooru-sourced jobs drop their bytes on finish even inside the
+    keep_recent window - their previews come from monbooru's thumbnail."""
+    runner = Runner(_FakeEngine(), _FakeStore(), 0, keep_recent=2)
+    jobs = [make_job(i, "a") for i in range(3)]
+    jobs[2].source = "monbooru"
+    for job in jobs:
+        job.status = store.DONE
+        runner._jobs[job.id] = job
+        runner._order.append(job.id)
+    runner._evict_bytes()
+    # the newest slot would retain local0/local1? no: order is oldest-first,
+    # so the newest two are local[1] and relay; relay is monbooru -> dropped,
+    # local[1] keeps its bytes, local[0] falls out of the window.
+    assert jobs[0].data == b""
+    assert jobs[1].data == b"x"
+    assert jobs[2].data == b""

@@ -283,13 +283,17 @@ class Runner:
     # -- memory -----------------------------------------------------------------
 
     def _evict_bytes(self) -> None:
-        """Keep bytes only for live jobs and the newest few done ones, then
-        cap the finished-Job object count (results stay in SQLite)."""
+        """Keep bytes only for live jobs and the newest few local done ones,
+        then cap the finished-Job object count (results stay in SQLite).
+        monbooru jobs drop their bytes the moment they finish - their
+        previews come from monbooru's own thumbnail, not from here."""
         done_with_bytes = [jid for jid in self._order if (j := self._jobs.get(jid)) and j.status == store.DONE]
-        evict = done_with_bytes if self.keep_recent <= 0 else done_with_bytes[:-self.keep_recent]
-        for jid in evict:
-            if job := self._jobs.get(jid):
-                job.data = b""
+        retained = set() if self.keep_recent <= 0 else set(done_with_bytes[-self.keep_recent:])
+        for jid in done_with_bytes:
+            job = self._jobs.get(jid)
+            if jid in retained and job is not None and job.source != "monbooru":
+                continue
+            job.data = b""
         if self.max_job_objects > 0:
             finished = [jid for jid in self._order if (j := self._jobs.get(jid)) and j.status in store._TERMINAL]
             for jid in finished[:-self.max_job_objects]:

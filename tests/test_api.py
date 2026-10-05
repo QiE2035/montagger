@@ -325,3 +325,30 @@ def test_unknown_model_rejected(client):
     assert resp.status_code == 502  # is_available reason becomes the error
     body = resp.json()
     assert body["status"] == "error" and "not installed" in body["error"]
+
+
+def test_remote_preview_proxies_monbooru_thumbnail(client, monkeypatch):
+    ctx = client.ctx
+    ctx.store.create_job(
+        job_id="remotejob", filename="r.jpg", source="monbooru", model="stub",
+        sha256="r" * 64, md5="m" * 32, bytes_len=3,
+    )
+    ctx.store.set_pushed("remotejob", 77)
+
+    class FakeClient:
+        def __init__(self, cfg):
+            pass
+
+        def call(self, method, path):
+            assert method == "GET" and path == "/api/v1/images/77/thumbnail"
+            return 200, b"\xff\xd8fakejpeg"
+
+    monkeypatch.setattr("montagger.pair.MonbooruClient", FakeClient)
+    r = client.get("/api/v1/jobs/remotejob/remote-preview")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "image/jpeg"
+    assert r.content.startswith(b"\xff\xd8")
+
+
+def test_remote_preview_without_monbooru_image(client):
+    assert client.get("/api/v1/jobs/ghost/remote-preview").status_code == 404

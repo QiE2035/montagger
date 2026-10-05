@@ -550,6 +550,28 @@ def create_app(ctx: AppContext) -> FastAPI:
             )
         return Response(content=job.data, media_type="application/octet-stream")
 
+    @app.get("/api/v1/jobs/{job_id}/remote-preview")
+    def job_remote_preview(request: Request, job_id: str):
+        """monbooru-backed preview: the local bytes of a pushed/relay job
+        are dropped as soon as it finishes, but its monbooru thumbnail is
+        one authenticated hop away and never expires while the pairing
+        holds."""
+        require_auth(request)
+        row = ctx.store.get_job(job_id)
+        if row is None or row.monbooru_id is None:
+            raise HTTPException(status_code=404, detail="no monbooru image for this job")
+        from .pair import MonbooruClient
+
+        client = MonbooruClient(ctx.cfg)
+        status, body = client.call("GET", f"/api/v1/images/{row.monbooru_id}/thumbnail")
+        if status != 200 or not isinstance(body, bytes):
+            raise HTTPException(status_code=404, detail="monbooru thumbnail unavailable")
+        return Response(
+            content=body,
+            media_type="image/jpeg",
+            headers={"Cache-Control": "private, max-age=3600"},
+        )
+
     @app.delete("/api/v1/jobs/{job_id}")
     def job_delete(request: Request, job_id: str):
         require_auth(request)
