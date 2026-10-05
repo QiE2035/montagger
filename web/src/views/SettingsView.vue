@@ -544,6 +544,9 @@ const categoryOptions = Object.entries(categoryZh).map(([value, label]) => ({ la
             </NButton>
           </div>
           <p class="mt-2 text-xs text-[var(--mt-text-dim)]">
+            卸载单个模型会归还其显存与运算缓冲；CUDA 上下文（数百 MB）驻留在推理子进程内，卸载全部模型或点「立即释放内存」时子进程一并退出、显存完整归还。排队中的任务会按需重新加载模型。
+          </p>
+          <p class="mt-2 text-xs text-[var(--mt-text-dim)]">
             模型目录：{{ settings.models.model_root }}
             <template v-if="health"> · 常驻内存 {{ health.rss_mb.toFixed(0) }} MB · 已加载 {{ health.models_loaded.length }} 个模型</template>
           </p>

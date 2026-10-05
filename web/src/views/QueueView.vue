@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { computed, h, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { Trash2, Copy, RefreshCw, XCircle, Search, ChevronLeft, ChevronRight } from "lucide-vue-next";
 import { NButton, NTag, useDialog, useMessage } from "naive-ui";
 import { api, connectEvents, type Job } from "../api";
@@ -40,6 +40,19 @@ async function refresh() {
 function goTo(p: number) {
   page.value = Math.min(Math.max(1, p), totalPages.value);
   refresh();
+}
+
+// The page number doubles as an editable jump box.
+const pageInput = ref("");
+watch(page, (p) => (pageInput.value = String(p)), { immediate: true });
+
+function submitPage() {
+  const p = parseInt(pageInput.value, 10);
+  if (Number.isNaN(p) || p === page.value) {
+    pageInput.value = String(page.value);
+    return;
+  }
+  goTo(p);
 }
 
 function doSearch() {
@@ -319,7 +332,16 @@ function preview(job: Job) {
       <n-button quaternary size="small" :disabled="page <= 1" @click="goTo(page - 1)">
         <template #icon><ChevronLeft :size="14" /></template>
       </n-button>
-      <span>第 {{ page }} / {{ totalPages }} 页 · 共 {{ total }} 条</span>
+      <span class="flex items-center gap-1">
+        第
+        <input
+          v-model="pageInput"
+          @keydown.enter="submitPage"
+          @blur="submitPage"
+          class="w-12 rounded-lg border border-[var(--mt-border)] bg-[var(--mt-card)] px-1 py-0.5 text-center text-xs outline-none focus:border-[var(--mt-primary)]"
+        />
+        / {{ totalPages }} 页 · 共 {{ total }} 条
+      </span>
       <n-button quaternary size="small" :disabled="page >= totalPages" @click="goTo(page + 1)">
         <template #icon><ChevronRight :size="14" /></template>
       </n-button>
