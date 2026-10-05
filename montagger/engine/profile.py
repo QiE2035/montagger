@@ -8,24 +8,41 @@ default, so the previous resolution layer fills the rest.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 PROFILE_SCHEMA_VERSION = 1
 
+Layout = Literal["nhwc", "nchw"]
+Channels = Literal["rgb", "bgr"]
+Normalize = Literal["none", "div255", "imagenet", "clip"]
+Pad = Literal["white_square", "mean_color_aspect"]
+Activation = Literal["sigmoid_in_model", "logits"]
+LabelFormat = Literal["wd14_csv", "joytag_txt", "camie_json"]
+CategoryScheme = Literal["wd14_numeric", "single_general", "name_string"]
 
-@dataclass(frozen=True)
-class Profile:
-    input_size: int = 0  # 0 reads the size from the model's input
-    layout: str = ""  # nhwc | nchw
-    channels: str = ""  # rgb | bgr
-    normalize: str = ""  # none | div255 | imagenet | clip
-    pad: str = ""  # white_square | mean_color_aspect
-    fill_color: tuple = (0, 0, 0)  # mean_color_aspect fill; camie default when zero
-    activation: str = ""  # sigmoid_in_model | logits
-    label_format: str = ""  # wd14_csv | joytag_txt | camie_json
-    category_scheme: str = ""  # wd14_numeric | single_general | name_string
-    output_index: int = 0  # camie's refined head and eva02's head are not output 0
+
+class Profile(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    input_size: int = Field(default=0, ge=0)  # 0 reads the size from the model's input
+    layout: Layout
+    channels: Channels
+    normalize: Normalize
+    pad: Pad
+    # mean_color_aspect fill; camie default when zero
+    fill_color: tuple[int, int, int] = (0, 0, 0)
+    activation: Activation
+    label_format: LabelFormat
+    category_scheme: CategoryScheme
+    output_index: int = Field(default=0, ge=0)  # camie's refined head and eva02's head are not output 0
+
+    @field_validator("fill_color", mode="before")
+    @classmethod
+    def _fill_color(cls, value: object) -> object:
+        return tuple(int(c) for c in value) if value else (0, 0, 0)
 
     def fingerprint(self) -> str:
         return repr(  # cheap identity for session cache keys
@@ -42,24 +59,6 @@ class Profile:
                 self.output_index,
             )
         )
-
-    def validate(self) -> None:
-        _check(self.layout, ("nhwc", "nchw"), "layout")
-        _check(self.channels, ("rgb", "bgr"), "channels")
-        _check(self.normalize, ("none", "div255", "imagenet", "clip"), "normalize")
-        _check(self.pad, ("white_square", "mean_color_aspect"), "pad")
-        _check(self.activation, ("sigmoid_in_model", "logits"), "activation")
-        _check(self.label_format, ("wd14_csv", "joytag_txt", "camie_json"), "label_format")
-        _check(self.category_scheme, ("wd14_numeric", "single_general", "name_string"), "category_scheme")
-        if self.input_size < 0:
-            raise ValueError(f"bad input_size {self.input_size}")
-        if self.output_index < 0:
-            raise ValueError(f"bad output_index {self.output_index}")
-
-
-def _check(value: str, allowed: tuple, axis: str) -> None:
-    if value not in allowed:
-        raise ValueError(f"bad profile {axis} {value!r} (want one of {', '.join(allowed)})")
 
 
 _DATA = Path(__file__).parent / "data"
@@ -111,24 +110,10 @@ def resolve_profile(model_dir: Path, name: str, tags_file: str) -> Profile:
     """Heuristic (tags extension) → embedded default → model-folder sidecar;
     a later layer overwrites any axis it sets, blanks inherit. The sidecar
     is tagger.json next to the model, matching monbooru."""
-    merged = {}
+    merged: dict = {}
     for layer in (_heuristic_profile(tags_file), _embedded_profile(name), _sidecar_profile(model_dir)):
         merged.update(layer)
-    fill = merged.get("fill_color")
-    profile = Profile(
-        input_size=int(merged.get("input_size") or 0),
-        layout=merged.get("layout", ""),
-        channels=merged.get("channels", ""),
-        normalize=merged.get("normalize", ""),
-        pad=merged.get("pad", ""),
-        fill_color=tuple(int(c) for c in fill) if fill else (0, 0, 0),
-        activation=merged.get("activation", ""),
-        label_format=merged.get("label_format", ""),
-        category_scheme=merged.get("category_scheme", ""),
-        output_index=int(merged.get("output_index") or 0),
-    )
-    profile.validate()
-    return profile
+    return Profile.model_validate(merged)
 
 
-__all__ = ["Profile", "resolve_profile", "replace"]
+__all__ = ["Profile", "resolve_profile"]

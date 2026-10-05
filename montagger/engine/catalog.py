@@ -9,46 +9,36 @@ embedded entries, same as monbooru.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
+
+from pydantic import BaseModel, Field
 
 _DATA = Path(__file__).parent / "data"
 
 
-@dataclass
-class CatalogFile:
+class CatalogFile(BaseModel):
     url: str
     filename: str
 
 
-@dataclass
-class CatalogEntry:
+class CatalogEntry(BaseModel):
     name: str
-    description: str
-    files: list[CatalogFile]
+    description: str = ""
+    files: list[CatalogFile] = Field(default_factory=list)
     gated: bool = False
     default_threshold: float = 0.35
-    default_thresholds: dict = field(default_factory=dict)
-    default_top_k: dict = field(default_factory=dict)
+    default_thresholds: dict[str, float] = Field(default_factory=dict)
+    default_top_k: dict[str, int] = Field(default_factory=dict)
+
+
+class CatalogDoc(BaseModel):
+    version: Literal[1]
+    models: list[CatalogEntry] = Field(default_factory=list)
 
 
 def _parse(doc: dict) -> list[CatalogEntry]:
-    if doc.get("version") != 1:
-        raise ValueError(f"catalog: unsupported version {doc.get('version')}")
-    out = []
-    for model in doc.get("models", []):
-        out.append(
-            CatalogEntry(
-                name=model["name"],
-                description=model.get("description", ""),
-                files=[CatalogFile(url=f["url"], filename=f["filename"]) for f in model.get("files", [])],
-                gated=bool(model.get("gated", False)),
-                default_threshold=float(model.get("default_threshold", 0.35)),
-                default_thresholds=dict(model.get("default_thresholds", {})),
-                default_top_k=dict(model.get("default_top_k", {})),
-            )
-        )
-    return out
+    return CatalogDoc.model_validate(doc).models
 
 
 def load_catalog(model_path: Path | None = None) -> list[CatalogEntry]:

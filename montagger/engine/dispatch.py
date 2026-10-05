@@ -7,8 +7,9 @@ previous rule for its source in place.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from pathlib import Path
+
+from pydantic import BaseModel, ConfigDict
 
 from .names import sanitize_label
 from .categories import KNOWN_CATEGORIES
@@ -18,8 +19,9 @@ _DISPATCH_SCHEMA_VERSION = 1
 _DATA = Path(__file__).parent / "data"
 
 
-@dataclass(frozen=True)
-class DispatchRule:
+class DispatchRule(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
     drop: bool
     category: str  # "" exactly when drop
     name: str  # "" keeps the source label as the tag name
